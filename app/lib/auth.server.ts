@@ -84,18 +84,39 @@ export async function requireAuth(request: Request): Promise<AuthResult> {
 
   console.log("[Auth] Staff member:", staffMember.id, staffMember.firstName, "isAdmin:", isAdmin);
 
-  // Track staff info for the assignments UI (only write when we have useful data)
+  // Track staff info and migrate pending registrations
   if (staffId !== "gid://shopify/StaffMember/0") {
-    const updateData: Record<string, unknown> = { lastSeen: new Date() };
-    if (firstName) updateData.firstName = firstName;
-    if (lastName) updateData.lastName = lastName;
-    if (email) updateData.email = email;
+    try {
+      // Check if there's a pending registration for this email (admin-registered before first login)
+      if (email) {
+        const pendingId = `pending:${email.toLowerCase()}`;
+        const pendingInfo = await prisma.staffInfo.findUnique({ where: { id: pendingId } });
+        if (pendingInfo) {
+          // Migrate all assignments from pending ID to real GID
+          await prisma.staffAssignment.updateMany({
+            where: { staffId: pendingId },
+            data: { staffId },
+          });
+          // Delete the pending StaffInfo record
+          await prisma.staffInfo.delete({ where: { id: pendingId } });
+          console.log("[Auth] Migrated pending staff", pendingId, "→", staffId);
+        }
+      }
 
-    prisma.staffInfo.upsert({
-      where: { id: staffId },
-      update: updateData,
-      create: { id: staffId, shop: session.shop, firstName, lastName, email },
-    }).catch((err) => console.error("[Auth] Failed to upsert staff info:", err));
+      // Upsert the real staff record
+      const updateData: Record<string, unknown> = { lastSeen: new Date() };
+      if (firstName) updateData.firstName = firstName;
+      if (lastName) updateData.lastName = lastName;
+      if (email) updateData.email = email;
+
+      await prisma.staffInfo.upsert({
+        where: { id: staffId },
+        update: updateData,
+        create: { id: staffId, shop: session.shop, firstName, lastName, email },
+      });
+    } catch (err) {
+      console.error("[Auth] Failed to upsert/migrate staff info:", err);
+    }
   }
 
   // Use the OFFLINE admin client for API calls (full app permissions)
