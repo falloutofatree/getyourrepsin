@@ -133,6 +133,23 @@ export async function requireStaffAccess(
   return { admin, staffMember, companyLocationId, shop };
 }
 
+/**
+ * Get the set of company location GIDs the staff member is assigned to.
+ * Admins get null (meaning "all locations allowed").
+ */
+export async function getStaffAssignedLocationIds(
+  staffMember: StaffMember,
+): Promise<Set<string> | null> {
+  if (staffMember.isAdmin) return null;
+
+  const assignments = await prisma.staffAssignment.findMany({
+    where: { staffId: staffMember.id, companyLocationId: { not: "__ADMIN__" } },
+    select: { companyLocationId: true },
+  });
+
+  return new Set(assignments.map((a) => a.companyLocationId));
+}
+
 export async function validateOrderProducts(
   admin: AdminContext,
   companyLocationId: string,

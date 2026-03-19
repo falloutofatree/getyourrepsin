@@ -195,7 +195,8 @@ export async function fetchRepDraftOrders(
   admin: { graphql: Function },
   staffGid: string,
   first: number = 50,
-  cursor?: string
+  cursor?: string,
+  allowedLocationIds?: Set<string> | null,
 ): Promise<{ orders: DraftOrder[]; pageInfo: PageInfo }> {
   const numericId = staffGid.replace("gid://shopify/StaffMember/", "");
   const queryFilter = `tag:sales-rep-portal AND tag:rep:${numericId}`;
@@ -215,8 +216,21 @@ export async function fetchRepDraftOrders(
     return { orders: [], pageInfo: { hasNextPage: false, endCursor: null } };
   }
 
+  let orders = json.data.draftOrders.nodes;
+
+  // Filter out orders for company locations the rep is no longer assigned to.
+  // null means admin (no filtering). undefined means legacy call (no filtering).
+  if (allowedLocationIds) {
+    orders = orders.filter((order) => {
+      const locationId = order.purchasingEntity?.location?.id;
+      // Keep orders without a location (shouldn't happen, but defensive)
+      if (!locationId) return true;
+      return allowedLocationIds.has(locationId);
+    });
+  }
+
   return {
-    orders: json.data.draftOrders.nodes,
+    orders,
     pageInfo: json.data.draftOrders.pageInfo,
   };
 }

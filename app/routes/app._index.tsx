@@ -11,7 +11,7 @@ import {
 } from "@shopify/polaris";
 import { TitleBar } from "@shopify/app-bridge-react";
 
-import { requireAuth } from "../lib/auth.server";
+import { requireAuth, getStaffAssignedLocationIds } from "../lib/auth.server";
 import { fetchCompanyLocationsForStaff } from "../lib/graphql/companies";
 import { fetchRepDraftOrders } from "../lib/graphql/orders";
 import { CompanySelector } from "../components/CompanySelector";
@@ -35,7 +35,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     }
 
     try {
-      const draftOrdersResult = await fetchRepDraftOrders(admin, staffMember.id, 10);
+      const allowedLocationIds = await getStaffAssignedLocationIds(staffMember);
+      const draftOrdersResult = await fetchRepDraftOrders(admin, staffMember.id, 10, undefined, allowedLocationIds);
       recentOrders = draftOrdersResult.orders;
       console.log("[Dashboard] Draft orders loaded:", recentOrders.length);
     } catch (err) {

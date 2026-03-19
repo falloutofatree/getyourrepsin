@@ -11,7 +11,7 @@ import {
 } from "@shopify/polaris";
 import { TitleBar } from "@shopify/app-bridge-react";
 
-import { requireAuth } from "../lib/auth.server";
+import { requireAuth, getStaffAssignedLocationIds } from "../lib/auth.server";
 import { fetchRepDraftOrders } from "../lib/graphql/orders";
 import { AppBranding } from "../components/AppBranding";
 import { formatMoney, formatDate } from "../lib/utils/format";
@@ -20,7 +20,8 @@ import type { DraftOrder } from "../types";
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { admin, staffMember } = await requireAuth(request);
 
-  const result = await fetchRepDraftOrders(admin, staffMember.id, 50);
+  const allowedLocationIds = await getStaffAssignedLocationIds(staffMember);
+  const result = await fetchRepDraftOrders(admin, staffMember.id, 50, undefined, allowedLocationIds);
 
   return json({
     staffMember: { firstName: staffMember.firstName },

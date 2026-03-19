@@ -19,7 +19,7 @@ import {
 } from "@shopify/polaris";
 import { TitleBar, useAppBridge } from "@shopify/app-bridge-react";
 
-import { requireAuth } from "../lib/auth.server";
+import { requireAuth, getStaffAssignedLocationIds } from "../lib/auth.server";
 import { fetchDraftOrderDetail } from "../lib/graphql/orders";
 import { sendInvoice } from "../lib/graphql/draft-orders";
 import { AppBranding } from "../components/AppBranding";
@@ -43,6 +43,17 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     throw new Response("Forbidden — this order does not belong to you", {
       status: 403,
     });
+  }
+
+  // Even if the rep created this order, verify they're still assigned to the company location
+  const orderLocationId = order.purchasingEntity?.location?.id;
+  if (orderLocationId && !staffMember.isAdmin) {
+    const allowedLocationIds = await getStaffAssignedLocationIds(staffMember);
+    if (allowedLocationIds && !allowedLocationIds.has(orderLocationId)) {
+      throw new Response("Forbidden — you are no longer assigned to this company location", {
+        status: 403,
+      });
+    }
   }
 
   return json({
