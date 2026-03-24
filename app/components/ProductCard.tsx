@@ -31,7 +31,7 @@ export function ProductCard({
 
   const firstVariant = product.variants.nodes[0];
   const hasMultipleVariants = product.variants.nodes.length > 1;
-  const isOutOfStock = product.totalInventory !== null && product.totalInventory <= 0;
+  const isOutOfStock = false;
 
   const priceMapObj = new Map(Object.entries(priceMap));
   const displayPrice = firstVariant
@@ -70,13 +70,7 @@ export function ProductCard({
               </Text>
             )}
           </InlineStack>
-          <InlineStack gap="200">
-            {isOutOfStock ? (
-              <Badge tone="critical">Out of Stock</Badge>
-            ) : product.totalInventory !== null && product.totalInventory <= 5 ? (
-              <Badge tone="warning">{`${product.totalInventory} left`}</Badge>
-            ) : null}
-          </InlineStack>
+          <InlineStack gap="200" />
           <Button
             onClick={toggleExpand}
             disabled={isOutOfStock}

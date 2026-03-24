@@ -58,20 +58,12 @@ export function VariantSelector({
     [variants]
   );
 
-  const maxQuantity =
-    selectedVariant?.inventoryQuantity != null && selectedVariant.inventoryQuantity > 0
-      ? selectedVariant.inventoryQuantity
-      : undefined;
+  const maxQuantity = undefined;
 
   const handleAdd = useCallback(() => {
     if (!selectedVariant) return;
     let qty = parseInt(quantity, 10);
     if (isNaN(qty) || qty < 1) return;
-
-    // Cap quantity to available inventory
-    if (maxQuantity !== undefined && qty > maxQuantity) {
-      qty = maxQuantity;
-    }
 
     onAddToCart({
       variantId: selectedVariant.id,
@@ -90,10 +82,7 @@ export function VariantSelector({
     setQuantity("1");
   }, [selectedVariant, quantity, resolvedPrice, product, onAddToCart, maxQuantity]);
 
-  const isVariantOutOfStock =
-    selectedVariant?.inventoryQuantity !== null &&
-    selectedVariant?.inventoryQuantity !== undefined &&
-    selectedVariant.inventoryQuantity <= 0;
+  const isVariantOutOfStock = false;
 
   const variantImageUrl =
     selectedVariant?.image?.url ?? product.featuredImage?.url;
@@ -140,11 +129,6 @@ export function VariantSelector({
             </Text>
           )}
         </InlineStack>
-        {maxQuantity !== undefined && (
-          <Text as="p" variant="bodySm" tone="subdued">
-            {maxQuantity} available
-          </Text>
-        )}
         {isVariantOutOfStock && (
           <Text as="p" variant="bodySm" tone="critical">
             This variant is out of stock
