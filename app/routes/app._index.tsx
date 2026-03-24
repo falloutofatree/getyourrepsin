@@ -6,8 +6,10 @@ import {
   Card,
   Text,
   BlockStack,
+  InlineStack,
   IndexTable,
   Badge,
+  Button,
 } from "@shopify/polaris";
 import { TitleBar } from "@shopify/app-bridge-react";
 
@@ -94,9 +96,14 @@ export default function Dashboard() {
           <Layout>
             <Layout.Section>
               <BlockStack gap="400">
-                <Text as="h2" variant="headingLg">
-                  Your Accounts
-                </Text>
+                <InlineStack align="space-between" blockAlign="center">
+                  <Text as="h2" variant="headingLg">
+                    Your Accounts
+                  </Text>
+                  <Button url="/app/company/new" variant="primary">
+                    New Company
+                  </Button>
+                </InlineStack>
                 <CompanySelector
                   locations={locations as CompanyLocation[]}
                   onSelect={handleSelectLocation}

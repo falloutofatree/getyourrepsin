@@ -37,6 +37,7 @@ export async function requireAuth(request: Request): Promise<AuthResult> {
   let isAccountOwner = associatedUser?.account_owner ?? false;
 
   // Fallback: if online session data is missing, check our StaffInfo cache
+  let canSendInvoice = false;
   if (!firstName && userId) {
     const staffInfo = await prisma.staffInfo.findFirst({
       where: { id: `gid://shopify/StaffMember/${userId}` },
@@ -45,6 +46,17 @@ export async function requireAuth(request: Request): Promise<AuthResult> {
       firstName = staffInfo.firstName;
       lastName = staffInfo.lastName;
       email = staffInfo.email;
+    }
+    if (staffInfo) {
+      canSendInvoice = staffInfo.canSendInvoice;
+    }
+  } else if (userId) {
+    const staffInfo = await prisma.staffInfo.findFirst({
+      where: { id: `gid://shopify/StaffMember/${userId}` },
+      select: { canSendInvoice: true },
+    });
+    if (staffInfo) {
+      canSendInvoice = staffInfo.canSendInvoice;
     }
   }
 
@@ -80,6 +92,7 @@ export async function requireAuth(request: Request): Promise<AuthResult> {
     avatar: null,
     locale: associatedUser?.locale ?? "en",
     isAdmin,
+    canSendInvoice: isAdmin || canSendInvoice,
   };
 
   console.log("[Auth] Staff member:", staffMember.id, staffMember.firstName, "isAdmin:", isAdmin);

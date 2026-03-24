@@ -18,7 +18,9 @@ import {
   SkeletonPage,
   SkeletonBodyText,
   InlineStack,
+  InlineGrid,
   EmptyState,
+  Select,
 } from "@shopify/polaris";
 import { TitleBar } from "@shopify/app-bridge-react";
 
@@ -32,11 +34,12 @@ import { AppBranding } from "../components/AppBranding";
 import { ProductGrid } from "../components/ProductGrid";
 import { CartSummary } from "../components/CartSummary";
 import { useCartContext } from "../components/CartProvider";
+import prisma from "../db.server";
 import type { Product, PageInfo } from "../types";
 
 export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   const companyLocationId = `gid://shopify/CompanyLocation/${params.id}`;
-  const { admin, staffMember } = await requireStaffAccess(
+  const { admin, staffMember, shop } = await requireStaffAccess(
     request,
     companyLocationId
   );
@@ -82,14 +85,31 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
       currencyCode: "USD",
       publicationId: null as string | null,
       noCatalog: true,
+      filterableCollections: [] as Array<{ id: string; title: string; numericId: string }>,
+      currentSearch: "",
+      currentCollection: "",
     });
   }
 
   const url = new URL(request.url);
   const cursor = url.searchParams.get("cursor") ?? undefined;
+  const searchQuery = url.searchParams.get("search") ?? "";
+  const collectionNumericId = url.searchParams.get("collection") ?? "";
+
+  // Build product query filter
+  const queryParts: string[] = [];
+  if (collectionNumericId) queryParts.push(`collection_id:${collectionNumericId}`);
+  if (searchQuery) queryParts.push(`title:${searchQuery} OR sku:${searchQuery}`);
+  const productQuery = queryParts.length > 0 ? queryParts.join(" ") : undefined;
+
+  // Fetch filterable collections from DB
+  const filterableCollections = await prisma.filterableCollection.findMany({
+    where: { shop },
+    orderBy: { title: "asc" },
+  });
 
   const [productsResult, priceMap] = await Promise.all([
-    fetchCatalogProducts(admin, activeCatalog.publication.id, cursor),
+    fetchCatalogProducts(admin, activeCatalog.publication.id, cursor, true, productQuery),
     activeCatalog.priceList
       ? fetchPriceListPrices(admin, activeCatalog.priceList.id)
       : Promise.resolve(new Map<string, string>()),
@@ -109,6 +129,13 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     currencyCode: activeCatalog.priceList?.currency ?? "USD",
     publicationId: activeCatalog.publication.id,
     noCatalog: false,
+    filterableCollections: filterableCollections.map((c) => ({
+      id: c.collectionId,
+      title: c.title,
+      numericId: c.numericId,
+    })),
+    currentSearch: searchQuery,
+    currentCollection: collectionNumericId,
   });
 };
 
@@ -122,6 +149,9 @@ export default function CompanyCatalog() {
     currencyCode,
     publicationId,
     noCatalog,
+    filterableCollections,
+    currentSearch,
+    currentCollection,
   } = useLoaderData<typeof loader>();
   const navigate = useNavigate();
   const { setCompany, addItem, cart } = useCartContext();
@@ -132,6 +162,8 @@ export default function CompanyCatalog() {
     initialProducts as Product[]
   );
   const [currentPageInfo, setCurrentPageInfo] = useState(initialPageInfo);
+  const [searchValue, setSearchValue] = useState(currentSearch ?? "");
+  const [searchTimeout, setSearchTimeout] = useState<ReturnType<typeof setTimeout> | null>(null);
 
   // Set company context in cart when entering this page
   useEffect(() => {
@@ -160,12 +192,45 @@ export default function CompanyCatalog() {
     setCurrentPageInfo(initialPageInfo);
   }, [initialProducts, initialPageInfo]);
 
+  const handleCollectionChange = useCallback(
+    (value: string) => {
+      const params = new URLSearchParams(searchParams);
+      if (value) {
+        params.set("collection", value);
+      } else {
+        params.delete("collection");
+      }
+      params.delete("cursor");
+      setSearchParams(params);
+    },
+    [searchParams, setSearchParams],
+  );
+
+  const handleSearchChange = useCallback(
+    (value: string) => {
+      setSearchValue(value);
+      if (searchTimeout) clearTimeout(searchTimeout);
+      const timeout = setTimeout(() => {
+        const params = new URLSearchParams(searchParams);
+        if (value.trim()) {
+          params.set("search", value.trim());
+        } else {
+          params.delete("search");
+        }
+        params.delete("cursor");
+        setSearchParams(params);
+      }, 400);
+      setSearchTimeout(timeout);
+    },
+    [searchParams, setSearchParams, searchTimeout],
+  );
+
   const handleLoadMore = useCallback(() => {
     if (!currentPageInfo.hasNextPage || !currentPageInfo.endCursor) return;
-    const params = new URLSearchParams();
+    const params = new URLSearchParams(searchParams);
     params.set("cursor", currentPageInfo.endCursor);
     fetcher.load(`/app/company/${location.id.replace("gid://shopify/CompanyLocation/", "")}?${params}`);
-  }, [currentPageInfo, fetcher, location.id]);
+  }, [currentPageInfo, fetcher, location.id, searchParams]);
 
   const handleAddToCart = useCallback(
     (item: {
@@ -217,6 +282,35 @@ export default function CompanyCatalog() {
         <Layout>
           <Layout.Section>
             <BlockStack gap="400">
+              {(filterableCollections.length > 0 || true) && (
+                <Card>
+                  <InlineGrid columns={{ xs: 1, md: 2 }} gap="300">
+                    {filterableCollections.length > 0 && (
+                      <Select
+                        label="Filter by collection"
+                        options={[
+                          { label: "All Collections", value: "" },
+                          ...filterableCollections.map((c) => ({
+                            label: c.title,
+                            value: c.numericId,
+                          })),
+                        ]}
+                        value={currentCollection ?? ""}
+                        onChange={handleCollectionChange}
+                      />
+                    )}
+                    <TextField
+                      label="Search products"
+                      value={searchValue}
+                      onChange={handleSearchChange}
+                      autoComplete="off"
+                      placeholder="Search by title or SKU..."
+                      clearButton
+                      onClearButtonClick={() => handleSearchChange("")}
+                    />
+                  </InlineGrid>
+                </Card>
+              )}
               {allProducts.length === 0 ? (
                 <Card>
                   <EmptyState

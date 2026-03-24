@@ -24,3 +24,4 @@ export type {
 } from "./order";
 export type { PriceListPrice, PriceMap } from "./price-list";
 export type { CartItem, CartState, CartAction } from "./cart";
+export type { CustomerSearchResult, CompanyCreateFormData } from "./customer";

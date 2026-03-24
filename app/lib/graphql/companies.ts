@@ -254,3 +254,202 @@ export async function fetchCompanyContacts(
   setCached(cacheKey, contacts, "COMPANY_CONTACTS");
   return contacts;
 }
+
+// --- Company Creation ---
+
+const COMPANY_CREATE_MUTATION = `#graphql
+  mutation CompanyCreate($input: CompanyCreateInput!) {
+    companyCreate(input: $input) {
+      company {
+        id
+        name
+        locations(first: 1) {
+          nodes {
+            id
+            name
+            shippingAddress {
+              address1
+              city
+              province
+              country
+              countryCode
+              zip
+            }
+          }
+        }
+        contacts(first: 1) {
+          nodes {
+            id
+            customer {
+              id
+              email
+            }
+          }
+        }
+      }
+      userErrors {
+        field
+        message
+      }
+    }
+  }
+`;
+
+const PAYMENT_TERMS_TEMPLATES_QUERY = `#graphql
+  query PaymentTermsTemplates {
+    paymentTermsTemplates {
+      id
+      name
+      paymentTermsType
+      dueInDays
+    }
+  }
+`;
+
+interface CompanyCreateInput {
+  company: {
+    name: string;
+    externalId?: string;
+  };
+  companyLocation?: {
+    name: string;
+    shippingAddress?: {
+      address1?: string;
+      address2?: string;
+      city?: string;
+      countryCode: string;
+      firstName?: string;
+      lastName?: string;
+      phone?: string;
+      zip?: string;
+      zoneCode?: string;
+    };
+    billingSameAsShipping?: boolean;
+    buyerExperienceConfiguration?: {
+      paymentTermsTemplateId?: string;
+    };
+    taxExempt?: boolean;
+    taxRegistrationId?: string;
+  };
+  companyContact?: {
+    email?: string;
+    firstName?: string;
+    lastName?: string;
+    phone?: string;
+  };
+}
+
+interface CompanyCreateResponse {
+  data?: {
+    companyCreate: {
+      company: {
+        id: string;
+        name: string;
+        locations: {
+          nodes: Array<{
+            id: string;
+            name: string;
+            shippingAddress: {
+              address1: string | null;
+              city: string | null;
+              province: string | null;
+              country: string | null;
+              countryCode: string;
+              zip: string | null;
+            } | null;
+          }>;
+        };
+        contacts: {
+          nodes: Array<{
+            id: string;
+            customer: { id: string; email: string | null };
+          }>;
+        };
+      } | null;
+      userErrors: Array<{ field: string[]; message: string }>;
+    };
+  };
+  errors?: Array<{ message: string }>;
+}
+
+interface PaymentTermsTemplate {
+  id: string;
+  name: string;
+  paymentTermsType: string;
+  dueInDays: number | null;
+}
+
+interface PaymentTermsTemplatesResponse {
+  data?: {
+    paymentTermsTemplates: PaymentTermsTemplate[];
+  };
+  errors?: Array<{ message: string }>;
+}
+
+interface CreatedCompany {
+  id: string;
+  name: string;
+  locations: {
+    nodes: Array<{
+      id: string;
+      name: string;
+      shippingAddress: {
+        address1: string | null;
+        city: string | null;
+        province: string | null;
+        country: string | null;
+        countryCode: string;
+        zip: string | null;
+      } | null;
+    }>;
+  };
+  contacts: {
+    nodes: Array<{
+      id: string;
+      customer: { id: string; email: string | null };
+    }>;
+  };
+}
+
+export async function createCompany(
+  admin: { graphql: Function },
+  input: CompanyCreateInput,
+): Promise<{ company: CreatedCompany | null; errors: string[] }> {
+  const response = await admin.graphql(COMPANY_CREATE_MUTATION, {
+    variables: { input },
+  });
+  const json: CompanyCreateResponse = await response.json();
+
+  if (json.errors?.length) {
+    console.error("[Companies] Create error:", json.errors);
+    return { company: null, errors: json.errors.map((e) => e.message) };
+  }
+
+  const result = json.data?.companyCreate;
+  if (result?.userErrors?.length) {
+    return {
+      company: null,
+      errors: result.userErrors.map((e) => e.message),
+    };
+  }
+
+  if (!result?.company) {
+    return { company: null, errors: ["Company creation returned no data"] };
+  }
+
+  return { company: result.company, errors: [] };
+}
+
+export async function fetchPaymentTermsTemplates(
+  admin: { graphql: Function },
+): Promise<PaymentTermsTemplate[]> {
+  const response = await admin.graphql(PAYMENT_TERMS_TEMPLATES_QUERY);
+  const json: PaymentTermsTemplatesResponse = await response.json();
+
+  if (json.errors?.length) {
+    console.error("[Companies] Payment terms templates error:", json.errors);
+    return [];
+  }
+
+  return json.data?.paymentTermsTemplates ?? [];
+}

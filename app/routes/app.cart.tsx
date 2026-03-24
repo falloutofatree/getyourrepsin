@@ -24,6 +24,7 @@ import {
 } from "../lib/auth.server";
 import { fetchCompanyContacts, fetchCompanyLocationWithCatalogs } from "../lib/graphql/companies";
 import { createDraftOrder, sendInvoice } from "../lib/graphql/draft-orders";
+import { sendSlackNotification } from "../lib/slack.server";
 import { useCartContext } from "../components/CartProvider";
 import { OrderConfirmation } from "../components/OrderConfirmation";
 import { formatMoney, formatAddress } from "../lib/utils/format";
@@ -34,10 +35,14 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const locationId = url.searchParams.get("locationId");
 
   if (!locationId) {
-    return json({ contacts: [] as CompanyContact[], locationData: null });
+    return json({
+      contacts: [] as CompanyContact[],
+      locationData: null,
+      canSendInvoice: false,
+    });
   }
 
-  const { admin } = await requireStaffAccess(request, locationId);
+  const { admin, staffMember } = await requireStaffAccess(request, locationId);
   const [contacts, location] = await Promise.all([
     fetchCompanyContacts(admin, locationId),
     fetchCompanyLocationWithCatalogs(admin, locationId),
@@ -49,6 +54,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       shippingAddress: location.shippingAddress,
       billingAddress: location.billingAddress,
     },
+    canSendInvoice: staffMember.canSendInvoice,
   });
 };
 
@@ -71,7 +77,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     );
   }
 
-  const { admin, staffMember } = await requireStaffAccess(
+  const { admin, staffMember, shop } = await requireStaffAccess(
     request,
     companyLocationId
   );
@@ -154,9 +160,11 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     });
   }
 
-  // Send invoice if requested
+  // Send invoice if requested AND rep has permission
   let invoiceSent = false;
-  if (sendInvoiceFlag && result.draftOrder) {
+  const canSend = staffMember.canSendInvoice;
+
+  if (sendInvoiceFlag && canSend && result.draftOrder) {
     const invoiceResult = await sendInvoice(admin, result.draftOrder.id, {
       to: contactEmail,
     });
@@ -170,6 +178,25 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         errors: [],
       });
     }
+  }
+
+  // Send Slack notification when rep doesn't have invoice permission
+  if (!canSend && result.draftOrder) {
+    const repName = `${staffMember.firstName} ${staffMember.lastName}`.trim();
+    const companyName = formData.get("companyName") as string || "Unknown";
+    const locationName = formData.get("locationName") as string || "Unknown";
+    const total = result.draftOrder.totalPriceSet?.shopMoney;
+
+    sendSlackNotification(shop, {
+      orderName: result.draftOrder.name,
+      repName,
+      companyName,
+      locationName,
+      totalAmount: total?.amount ?? "0.00",
+      currencyCode: total?.currencyCode ?? "USD",
+      draftOrderId: result.draftOrder.id,
+      shopDomain: shop,
+    }).catch((err) => console.error("[Cart] Slack notification failed:", err));
   }
 
   return json({
@@ -197,6 +224,11 @@ export default function CartReview() {
 
   // Load contacts when component mounts
   const contactFetcher = useFetcher<typeof loader>();
+
+  const canSendInvoice =
+    (contactFetcher.data as typeof loaderData)?.canSendInvoice ??
+    loaderData.canSendInvoice ??
+    false;
   useEffect(() => {
     if (cart.companyLocationId && contacts.length === 0) {
       contactFetcher.load(
@@ -268,6 +300,8 @@ export default function CartReview() {
           }))
         )
       );
+      formData.set("companyName", cart.companyName);
+      formData.set("locationName", cart.locationName);
       if (shippingAddress) {
         formData.set("shippingAddress", JSON.stringify(shippingAddress));
       }
@@ -472,14 +506,16 @@ export default function CartReview() {
                   >
                     Create Draft Order
                   </Button>
-                  <Button
-                    fullWidth
-                    onClick={() => handleSubmit(true)}
-                    loading={isSubmitting}
-                    disabled={!selectedContactId}
-                  >
-                    Create & Send Invoice
-                  </Button>
+                  {canSendInvoice && (
+                    <Button
+                      fullWidth
+                      onClick={() => handleSubmit(true)}
+                      loading={isSubmitting}
+                      disabled={!selectedContactId}
+                    >
+                      Create & Send Invoice
+                    </Button>
+                  )}
                 </BlockStack>
               </Card>
             </BlockStack>

@@ -34,6 +34,7 @@ export default function App() {
         </Link>
         <Link to="/app/orders">Orders</Link>
         {isAdmin && <Link to="/app/assignments">Staff Assignments</Link>}
+        {isAdmin && <Link to="/app/settings">Settings</Link>}
       </NavMenu>
       <CartProvider>
         <Outlet />

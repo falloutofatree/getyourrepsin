@@ -51,9 +51,9 @@ export const CATALOG_PRODUCTS_QUERY = `#graphql
 `;
 
 export const CATALOG_PRODUCTS_GRID_QUERY = `#graphql
-  query CatalogProductsGrid($publicationId: ID!, $first: Int!, $after: String) {
+  query CatalogProductsGrid($publicationId: ID!, $first: Int!, $after: String, $query: String) {
     publication(id: $publicationId) {
-      products(first: $first, after: $after) {
+      products(first: $first, after: $after, query: $query) {
         nodes {
           id
           title
@@ -132,18 +132,20 @@ export async function fetchCatalogProducts(
   admin: { graphql: Function },
   publicationId: string,
   cursor?: string,
-  gridOnly: boolean = true
+  gridOnly: boolean = true,
+  productQuery?: string,
 ): Promise<{ products: Product[]; pageInfo: PageInfo }> {
-  const cacheKey = `publication:${publicationId}:products:${cursor ?? "start"}:${gridOnly ? "grid" : "full"}`;
+  const cacheKey = `publication:${publicationId}:products:${cursor ?? "start"}:${gridOnly ? "grid" : "full"}:${productQuery ?? ""}`;
   const cached = getCached<{ products: Product[]; pageInfo: PageInfo }>(cacheKey);
   if (cached) return cached;
 
-  const query = gridOnly ? CATALOG_PRODUCTS_GRID_QUERY : CATALOG_PRODUCTS_QUERY;
-  const response = await admin.graphql(query, {
+  const gqlQuery = gridOnly ? CATALOG_PRODUCTS_GRID_QUERY : CATALOG_PRODUCTS_QUERY;
+  const response = await admin.graphql(gqlQuery, {
     variables: {
       publicationId,
       first: 50,
       after: cursor ?? null,
+      query: productQuery ?? null,
     },
   });
 

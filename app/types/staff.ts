@@ -9,4 +9,5 @@ export interface StaffMember {
   } | null;
   locale: string;
   isAdmin: boolean;
+  canSendInvoice: boolean;
 }

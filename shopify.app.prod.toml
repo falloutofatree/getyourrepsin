@@ -1,12 +1,12 @@
-# Learn more about configuring your app at https://shopify.dev/docs/apps/tools/cli/configuration
+# Production app config — Sales Reps Portal
+# This is for the production Shopify app (separate from dev)
 
-client_id = "bcfafed21b080aef1839c76cce1297b1"
-name = "Sales reps app"
-application_url = "https://example.com"
+client_id = "0b8e2e20655ad30a496987c415aa905e"
+name = "Sales Reps Portal"
+application_url = "https://REPLACE_WITH_YOUR_DO_URL"
 embedded = true
 
 [build]
-automatically_update_urls_on_dev = true
 include_config_on_deploy = true
 
 [webhooks]
@@ -24,4 +24,4 @@ api_version = "2026-04"
 scopes = "read_products,read_product_listings,read_publications,read_companies,write_companies,read_customers,write_customers,write_draft_orders,read_draft_orders,read_orders,read_markets"
 
 [auth]
-redirect_urls = [ "https://example.com/api/auth" ]
+redirect_urls = [ "https://REPLACE_WITH_YOUR_DO_URL/auth/callback" ]

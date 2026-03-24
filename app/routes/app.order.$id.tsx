@@ -57,7 +57,10 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   }
 
   return json({
-    staffMember: { firstName: staffMember.firstName },
+    staffMember: {
+      firstName: staffMember.firstName,
+      canSendInvoice: staffMember.canSendInvoice,
+    },
     order,
   });
 };
@@ -68,6 +71,13 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
   const intent = formData.get("intent");
 
   if (intent === "send-invoice") {
+    if (!staffMember.canSendInvoice) {
+      return json({
+        success: false,
+        errors: ["You do not have permission to send invoices"],
+      });
+    }
+
     const draftOrderId = `gid://shopify/DraftOrder/${params.id}`;
     const email = formData.get("email") as string;
 
@@ -141,7 +151,8 @@ export default function OrderDetail() {
     ]
   );
 
-  const canSendInvoice = order.status.toUpperCase() === "OPEN";
+  const canSendInvoice =
+    order.status.toUpperCase() === "OPEN" && staffMember.canSendInvoice;
 
   return (
     <>

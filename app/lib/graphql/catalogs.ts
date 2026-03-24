@@ -184,3 +184,120 @@ export async function fetchCatalogForLocation(
   setCached(cacheKey, catalog, "CATALOG_PUBLICATION");
   return catalog;
 }
+
+// --- Catalog assignment for new company locations ---
+
+const CATALOG_CONTEXT_UPDATE_MUTATION = `#graphql
+  mutation CatalogContextUpdate($catalogId: ID!, $contextsToAdd: [CatalogContextInput!]!) {
+    catalogContextUpdate(catalogId: $catalogId, contextsToAdd: $contextsToAdd) {
+      catalog {
+        id
+        title
+      }
+      userErrors {
+        field
+        message
+      }
+    }
+  }
+`;
+
+interface CatalogContextUpdateResponse {
+  data?: {
+    catalogContextUpdate: {
+      catalog: { id: string; title: string } | null;
+      userErrors: Array<{ field: string[]; message: string }>;
+    };
+  };
+  errors?: Array<{ message: string }>;
+}
+
+/**
+ * Find the right catalog for a country code and assign the new company location to it.
+ * For MarketCatalogs, the market membership handles it automatically.
+ * For CompanyLocationCatalogs, we need to explicitly add the location.
+ */
+export async function assignCatalogToNewLocation(
+  admin: { graphql: Function },
+  companyLocationId: string,
+  countryCode: string,
+): Promise<{ catalogId: string | null; errors: string[] }> {
+  // Find the matching market catalog by country code
+  try {
+    const marketsResponse = await admin.graphql(MARKETS_QUERY);
+    const marketsJson: MarketsResponse = await marketsResponse.json();
+
+    if (!marketsJson.data?.markets?.nodes) {
+      return { catalogId: null, errors: ["No markets found"] };
+    }
+
+    const matchingMarket = marketsJson.data.markets.nodes.find((m) =>
+      m.regions.nodes.some(
+        (r) => r.code?.toUpperCase() === countryCode.toUpperCase(),
+      ),
+    );
+
+    if (!matchingMarket) {
+      console.log("[Catalogs] No market found for country code:", countryCode);
+      return { catalogId: null, errors: [] };
+    }
+
+    const marketCatalog = matchingMarket.catalogs.nodes.find(
+      (c) => c.status === "ACTIVE" && c.publication,
+    );
+
+    if (!marketCatalog) {
+      console.log("[Catalogs] No active catalog for market:", matchingMarket.name);
+      return { catalogId: null, errors: [] };
+    }
+
+    // Market catalogs automatically cover locations in their regions,
+    // so no explicit assignment needed. But for CompanyLocationCatalogs,
+    // we need to add the location to the catalog context.
+    if (marketCatalog.id.includes("CompanyLocationCatalog")) {
+      const updateResponse = await admin.graphql(
+        CATALOG_CONTEXT_UPDATE_MUTATION,
+        {
+          variables: {
+            catalogId: marketCatalog.id,
+            contextsToAdd: [
+              { companyLocationIds: [companyLocationId] },
+            ],
+          },
+        },
+      );
+      const updateJson: CatalogContextUpdateResponse =
+        await updateResponse.json();
+
+      if (updateJson.errors?.length) {
+        return {
+          catalogId: null,
+          errors: updateJson.errors.map((e) => e.message),
+        };
+      }
+
+      if (updateJson.data?.catalogContextUpdate?.userErrors?.length) {
+        return {
+          catalogId: null,
+          errors: updateJson.data.catalogContextUpdate.userErrors.map(
+            (e) => e.message,
+          ),
+        };
+      }
+    }
+
+    console.log(
+      "[Catalogs] Assigned catalog",
+      marketCatalog.title,
+      "for new location in",
+      countryCode,
+    );
+    return { catalogId: marketCatalog.id, errors: [] };
+  } catch (err) {
+    console.error("[Catalogs] Assign catalog failed:", err);
+    return {
+      catalogId: null,
+      errors: [err instanceof Error ? err.message : "Unknown error"],
+    };
+  }
+}

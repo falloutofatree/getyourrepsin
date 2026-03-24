@@ -45,6 +45,7 @@ interface StaffMemberInfo {
   firstName: string;
   lastName: string;
   email: string;
+  canSendInvoice: boolean;
 }
 
 interface LocationInfo {
@@ -110,6 +111,18 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       }
       throw err;
     }
+  }
+
+  if (intent === "toggle-invoice-permission") {
+    const staffId = formData.get("staffId") as string;
+    const currentValue = formData.get("currentValue") === "true";
+
+    await prisma.staffInfo.update({
+      where: { id: staffId },
+      data: { canSendInvoice: !currentValue },
+    });
+
+    return json({ success: true });
   }
 
   if (intent === "remove") {
@@ -217,6 +230,73 @@ export default function Assignments() {
             </Card>
           </Layout.Section>
         </Layout>
+
+        {staffMembers.length > 0 && (
+          <Layout>
+            <Layout.Section>
+              <Card>
+                <BlockStack gap="300">
+                  <Text as="h2" variant="headingMd">
+                    Invoice Permissions
+                  </Text>
+                  <Text as="p" variant="bodyMd" tone="subdued">
+                    Control which reps can send invoices directly. Reps without
+                    permission can only create draft orders for admin review.
+                  </Text>
+                  <IndexTable
+                    itemCount={staffMembers.length}
+                    headings={[
+                      { title: "Staff Member" },
+                      { title: "Email" },
+                      { title: "Invoice Permission" },
+                    ]}
+                    selectable={false}
+                  >
+                    {staffMembers.map((s, index) => (
+                      <IndexTable.Row key={s.id} id={s.id} position={index}>
+                        <IndexTable.Cell>
+                          <Text as="span" variant="bodyMd" fontWeight="bold">
+                            {s.firstName} {s.lastName}
+                          </Text>
+                        </IndexTable.Cell>
+                        <IndexTable.Cell>
+                          <Text as="span" variant="bodySm" tone="subdued">
+                            {s.email}
+                          </Text>
+                        </IndexTable.Cell>
+                        <IndexTable.Cell>
+                          <fetcher.Form method="post">
+                            <input
+                              type="hidden"
+                              name="intent"
+                              value="toggle-invoice-permission"
+                            />
+                            <input type="hidden" name="staffId" value={s.id} />
+                            <input
+                              type="hidden"
+                              name="currentValue"
+                              value={String(s.canSendInvoice)}
+                            />
+                            <InlineStack gap="200" blockAlign="center">
+                              <Badge
+                                tone={s.canSendInvoice ? "success" : "new"}
+                              >
+                                {s.canSendInvoice ? "Can Send" : "Restricted"}
+                              </Badge>
+                              <Button variant="plain" submit>
+                                {s.canSendInvoice ? "Restrict" : "Allow"}
+                              </Button>
+                            </InlineStack>
+                          </fetcher.Form>
+                        </IndexTable.Cell>
+                      </IndexTable.Row>
+                    ))}
+                  </IndexTable>
+                </BlockStack>
+              </Card>
+            </Layout.Section>
+          </Layout>
+        )}
 
         <Layout>
           <Layout.Section>
