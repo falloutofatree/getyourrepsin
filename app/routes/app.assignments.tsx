@@ -12,9 +12,12 @@ import {
   IndexTable,
   Badge,
   Banner,
+  Autocomplete,
+  Icon,
 } from "@shopify/polaris";
+import { SearchIcon } from "@shopify/polaris-icons";
 import { TitleBar } from "@shopify/app-bridge-react";
-import { useState } from "react";
+import { useState, useMemo, useCallback } from "react";
 
 import { requireAuth } from "../lib/auth.server";
 import prisma from "../db.server";
@@ -67,10 +70,12 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   let hasNextPage = true;
 
   while (hasNextPage) {
-    const locationsResponse = await admin.graphql(COMPANY_LOCATIONS_QUERY, {
+    const locationsResponse: Response = await admin.graphql(COMPANY_LOCATIONS_QUERY, {
       variables: { first: 100, after: cursor },
     });
-    const locationsJson = await locationsResponse.json();
+    const locationsJson: {
+      data?: { companyLocations?: { nodes: LocationInfo[]; pageInfo: { hasNextPage: boolean; endCursor: string | null } } };
+    } = await locationsResponse.json();
 
     if (!locationsJson.data?.companyLocations) {
       break;
@@ -80,6 +85,13 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     hasNextPage = locationsJson.data.companyLocations.pageInfo.hasNextPage;
     cursor = locationsJson.data.companyLocations.pageInfo.endCursor;
   }
+
+  // Sort alphabetically by company name, then location name
+  locations.sort((a, b) => {
+    const companyCompare = a.company.name.localeCompare(b.company.name);
+    if (companyCompare !== 0) return companyCompare;
+    return a.name.localeCompare(b.name);
+  });
 
   // Load known staff members from our DB (populated when they log in)
   const staffMembers: StaffMemberInfo[] = await prisma.staffInfo.findMany({
@@ -157,6 +169,7 @@ export default function Assignments() {
 
   const [selectedStaff, setSelectedStaff] = useState("");
   const [selectedLocation, setSelectedLocation] = useState("");
+  const [locationSearchValue, setLocationSearchValue] = useState("");
 
   const staffOptions = [
     { label: "Select a staff member...", value: "" },
@@ -166,13 +179,32 @@ export default function Assignments() {
     })),
   ];
 
-  const locationOptions = [
-    { label: "Select a company location...", value: "" },
-    ...locations.map((l) => ({
-      label: `${l.company.name} — ${l.name}`,
-      value: l.id,
-    })),
-  ];
+  const allLocationOptions = useMemo(
+    () =>
+      locations.map((l) => ({
+        label: `${l.company.name} — ${l.name}`,
+        value: l.id,
+      })),
+    [locations]
+  );
+
+  const filteredLocationOptions = useMemo(() => {
+    if (!locationSearchValue) return allLocationOptions;
+    const lower = locationSearchValue.toLowerCase();
+    return allLocationOptions.filter((opt) =>
+      opt.label.toLowerCase().includes(lower)
+    );
+  }, [allLocationOptions, locationSearchValue]);
+
+  const handleLocationSelect = useCallback(
+    (selected: string[]) => {
+      const selectedId = selected[0] ?? "";
+      setSelectedLocation(selectedId);
+      const match = allLocationOptions.find((o) => o.value === selectedId);
+      setLocationSearchValue(match?.label ?? "");
+    },
+    [allLocationOptions]
+  );
 
   // Build lookup maps for display
   const staffMap = new Map(staffMembers.map((s) => [s.id, s]));
@@ -220,12 +252,24 @@ export default function Assignments() {
                         </p>
                       </Banner>
                     )}
-                    <Select
-                      label="Company Location"
-                      options={locationOptions}
-                      value={selectedLocation}
-                      onChange={setSelectedLocation}
-                      name="companyLocationId"
+                    <input type="hidden" name="companyLocationId" value={selectedLocation} />
+                    <Autocomplete
+                      options={filteredLocationOptions}
+                      selected={selectedLocation ? [selectedLocation] : []}
+                      onSelect={handleLocationSelect}
+                      textField={
+                        <Autocomplete.TextField
+                          label="Company Location"
+                          value={locationSearchValue}
+                          onChange={(value) => {
+                            setLocationSearchValue(value);
+                            if (!value) setSelectedLocation("");
+                          }}
+                          placeholder="Search companies..."
+                          autoComplete="off"
+                          prefix={<Icon source={SearchIcon} />}
+                        />
+                      }
                     />
                     <InlineStack align="end">
                       <Button
