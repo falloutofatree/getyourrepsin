@@ -9,13 +9,18 @@ import {
   InlineStack,
   Button,
   Select,
-  IndexTable,
   Badge,
   Banner,
   Autocomplete,
   Icon,
+  TextField,
+  Collapsible,
+  Modal,
+  Box,
+  Divider,
+  EmptyState,
 } from "@shopify/polaris";
-import { SearchIcon } from "@shopify/polaris-icons";
+import { SearchIcon, ChevronDownIcon, ChevronRightIcon } from "@shopify/polaris-icons";
 import { TitleBar } from "@shopify/app-bridge-react";
 import { useState, useMemo, useCallback } from "react";
 
@@ -154,12 +159,10 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     }
 
     if (isCurrentlyAdmin) {
-      // Remove admin flag
       await prisma.staffAssignment.deleteMany({
         where: { staffId, companyLocationId: "__ADMIN__" },
       });
     } else {
-      // Add admin flag
       try {
         await prisma.staffAssignment.create({
           data: { shop, staffId, companyLocationId: "__ADMIN__" },
@@ -199,8 +202,195 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     return json({ success: true });
   }
 
+  if (intent === "remove-all-assignments") {
+    const staffId = formData.get("staffId") as string;
+    if (!staffId) {
+      return json({ error: "Staff ID is required" }, { status: 400 });
+    }
+    await prisma.staffAssignment.deleteMany({
+      where: { staffId, companyLocationId: { not: "__ADMIN__" } },
+    });
+    invalidatePattern(`staff:${staffId}:locations`);
+    return json({ success: true });
+  }
+
+  if (intent === "delete-staff") {
+    const staffId = formData.get("staffId") as string;
+    if (!staffId) {
+      return json({ error: "Staff ID is required" }, { status: 400 });
+    }
+    await prisma.staffAssignment.deleteMany({ where: { staffId } });
+    await prisma.staffInfo.deleteMany({ where: { id: staffId } });
+    invalidatePattern(`staff:${staffId}:locations`);
+    return json({ success: true });
+  }
+
   return json({ error: "Unknown intent" }, { status: 400 });
 };
+
+interface RepCardProps {
+  staff: StaffMemberInfo;
+  isAdmin: boolean;
+  staffAssignments: Array<{ id: string; companyLocationId: string }>;
+  locationMap: Map<string, LocationInfo>;
+  expanded: boolean;
+  onToggleExpand: () => void;
+  onRequestRemoveAll: () => void;
+  onRequestDelete: () => void;
+}
+
+function RepCard({
+  staff,
+  isAdmin,
+  staffAssignments,
+  locationMap,
+  expanded,
+  onToggleExpand,
+  onRequestRemoveAll,
+  onRequestDelete,
+}: RepCardProps) {
+  const fetcher = useFetcher();
+  const assignmentCount = staffAssignments.length;
+
+  const sortedAssignments = useMemo(() => {
+    return [...staffAssignments].sort((a, b) => {
+      const la = locationMap.get(a.companyLocationId);
+      const lb = locationMap.get(b.companyLocationId);
+      const labelA = la ? `${la.company.name} ${la.name}` : a.companyLocationId;
+      const labelB = lb ? `${lb.company.name} ${lb.name}` : b.companyLocationId;
+      return labelA.localeCompare(labelB);
+    });
+  }, [staffAssignments, locationMap]);
+
+  return (
+    <Card>
+      <BlockStack gap="300">
+        <div
+          onClick={onToggleExpand}
+          style={{ cursor: "pointer" }}
+          role="button"
+          tabIndex={0}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" || e.key === " ") {
+              e.preventDefault();
+              onToggleExpand();
+            }
+          }}
+        >
+          <InlineStack align="space-between" blockAlign="center" wrap={false}>
+            <InlineStack gap="200" blockAlign="center" wrap={false}>
+              <Icon source={expanded ? ChevronDownIcon : ChevronRightIcon} />
+              <BlockStack gap="050">
+                <Text as="span" variant="bodyMd" fontWeight="bold">
+                  {staff.firstName} {staff.lastName}
+                </Text>
+                <Text as="span" variant="bodySm" tone="subdued">
+                  {staff.email}
+                </Text>
+              </BlockStack>
+            </InlineStack>
+            <InlineStack gap="200" blockAlign="center">
+              {isAdmin && <Badge tone="success">Admin</Badge>}
+              {staff.canSendInvoice && <Badge tone="info">Can Send Invoice</Badge>}
+              <Badge tone={assignmentCount > 0 ? "attention" : undefined}>
+                {assignmentCount === 0
+                  ? "No stores"
+                  : `${assignmentCount} ${assignmentCount === 1 ? "store" : "stores"}`}
+              </Badge>
+            </InlineStack>
+          </InlineStack>
+        </div>
+
+        <Collapsible
+          open={expanded}
+          id={`rep-${staff.id}`}
+          transition={{ duration: "150ms", timingFunction: "ease-in-out" }}
+        >
+          <BlockStack gap="400">
+            <Divider />
+
+            <InlineStack gap="400" wrap>
+              <fetcher.Form method="post">
+                <input type="hidden" name="intent" value="toggle-admin" />
+                <input type="hidden" name="staffId" value={staff.id} />
+                <input type="hidden" name="currentValue" value={String(isAdmin)} />
+                <Button submit>{isAdmin ? "Revoke admin" : "Grant admin"}</Button>
+              </fetcher.Form>
+              <fetcher.Form method="post">
+                <input type="hidden" name="intent" value="toggle-invoice-permission" />
+                <input type="hidden" name="staffId" value={staff.id} />
+                <input type="hidden" name="currentValue" value={String(staff.canSendInvoice)} />
+                <Button submit>
+                  {staff.canSendInvoice ? "Restrict invoice sending" : "Allow invoice sending"}
+                </Button>
+              </fetcher.Form>
+            </InlineStack>
+
+            <Divider />
+
+            <BlockStack gap="200">
+              <Text as="h3" variant="headingSm">
+                Assigned stores
+              </Text>
+              {isAdmin && (
+                <Banner tone="info">
+                  <p>Admins automatically see every company location, regardless of assignments.</p>
+                </Banner>
+              )}
+              {sortedAssignments.length === 0 ? (
+                <Text as="p" variant="bodyMd" tone="subdued">
+                  No stores assigned.
+                </Text>
+              ) : (
+                <BlockStack gap="100">
+                  {sortedAssignments.map((a) => {
+                    const loc = locationMap.get(a.companyLocationId);
+                    return (
+                      <Box
+                        key={a.id}
+                        padding="200"
+                        background="bg-surface-secondary"
+                        borderRadius="200"
+                      >
+                        <InlineStack align="space-between" blockAlign="center">
+                          <Text as="span" variant="bodyMd">
+                            {loc
+                              ? `${loc.company.name} — ${loc.name}`
+                              : a.companyLocationId}
+                          </Text>
+                          <fetcher.Form method="post">
+                            <input type="hidden" name="intent" value="remove" />
+                            <input type="hidden" name="assignmentId" value={a.id} />
+                            <Button variant="plain" tone="critical" submit>
+                              Remove
+                            </Button>
+                          </fetcher.Form>
+                        </InlineStack>
+                      </Box>
+                    );
+                  })}
+                </BlockStack>
+              )}
+            </BlockStack>
+
+            <Divider />
+
+            <InlineStack gap="200" align="end">
+              {sortedAssignments.length > 0 && (
+                <Button tone="critical" onClick={onRequestRemoveAll}>
+                  Remove all assignments
+                </Button>
+              )}
+              <Button variant="primary" tone="critical" onClick={onRequestDelete}>
+                Delete sales rep
+              </Button>
+            </InlineStack>
+          </BlockStack>
+        </Collapsible>
+      </BlockStack>
+    </Card>
+  );
+}
 
 export default function Assignments() {
   const { locations, staffMembers, assignments, adminStaffIds } = useLoaderData<typeof loader>();
@@ -209,6 +399,14 @@ export default function Assignments() {
   const [selectedStaff, setSelectedStaff] = useState("");
   const [selectedLocation, setSelectedLocation] = useState("");
   const [locationSearchValue, setLocationSearchValue] = useState("");
+
+  const [search, setSearch] = useState("");
+  const [expandedReps, setExpandedReps] = useState<Set<string>>(new Set());
+  const [pendingAction, setPendingAction] = useState<
+    | { type: "remove-all"; staffId: string; staffName: string; count: number }
+    | { type: "delete-staff"; staffId: string; staffName: string; count: number }
+    | null
+  >(null);
 
   const staffOptions = [
     { label: "Select a staff member...", value: "" },
@@ -245,11 +443,66 @@ export default function Assignments() {
     [allLocationOptions]
   );
 
-  // Build lookup maps for display
-  const staffMap = new Map(staffMembers.map((s) => [s.id, s]));
-  const locationMap = new Map(locations.map((l) => [l.id, l]));
+  const locationMap = useMemo(
+    () => new Map(locations.map((l) => [l.id, l])),
+    [locations]
+  );
+
+  const assignmentsByStaff = useMemo(() => {
+    const map = new Map<string, Array<{ id: string; companyLocationId: string }>>();
+    for (const a of assignments) {
+      const list = map.get(a.staffId) ?? [];
+      list.push({ id: a.id, companyLocationId: a.companyLocationId });
+      map.set(a.staffId, list);
+    }
+    return map;
+  }, [assignments]);
+
+  const adminSet = useMemo(() => new Set(adminStaffIds), [adminStaffIds]);
+
+  const sortedStaff = useMemo(() => {
+    return [...staffMembers].sort((a, b) => {
+      const nameA = `${a.firstName} ${a.lastName}`.toLowerCase();
+      const nameB = `${b.firstName} ${b.lastName}`.toLowerCase();
+      return nameA.localeCompare(nameB);
+    });
+  }, [staffMembers]);
+
+  const filteredStaff = useMemo(() => {
+    if (!search.trim()) return sortedStaff;
+    const lower = search.toLowerCase();
+    return sortedStaff.filter((s) => {
+      const name = `${s.firstName} ${s.lastName}`.toLowerCase();
+      return name.includes(lower) || s.email.toLowerCase().includes(lower);
+    });
+  }, [sortedStaff, search]);
+
+  const totalAssignments = assignments.length;
+
+  const toggleExpand = useCallback((staffId: string) => {
+    setExpandedReps((prev) => {
+      const next = new Set(prev);
+      if (next.has(staffId)) {
+        next.delete(staffId);
+      } else {
+        next.add(staffId);
+      }
+      return next;
+    });
+  }, []);
 
   const actionData = fetcher.data as { error?: string; success?: boolean } | undefined;
+
+  const closeModal = () => setPendingAction(null);
+
+  const confirmPendingAction = () => {
+    if (!pendingAction) return;
+    const formData = new FormData();
+    formData.set("intent", pendingAction.type);
+    formData.set("staffId", pendingAction.staffId);
+    fetcher.submit(formData, { method: "post" });
+    closeModal();
+  };
 
   return (
     <Page backAction={{ content: "Dashboard", url: "/app" }}>
@@ -327,157 +580,150 @@ export default function Assignments() {
           </Layout.Section>
         </Layout>
 
-        {staffMembers.length > 0 && (
-          <Layout>
-            <Layout.Section>
-              <Card>
-                <BlockStack gap="300">
-                  <Text as="h2" variant="headingMd">
-                    Staff Permissions
-                  </Text>
-                  <Text as="p" variant="bodyMd" tone="subdued">
-                    Control admin access and invoice permissions for each staff member.
-                  </Text>
-                  <IndexTable
-                    itemCount={staffMembers.length}
-                    headings={[
-                      { title: "Staff Member" },
-                      { title: "Email" },
-                      { title: "Admin" },
-                      { title: "Invoice Permission" },
-                    ]}
-                    selectable={false}
-                  >
-                    {staffMembers.map((s, index) => {
-                      const isStaffAdmin = adminStaffIds.includes(s.id);
-                      return (
-                        <IndexTable.Row key={s.id} id={s.id} position={index}>
-                          <IndexTable.Cell>
-                            <Text as="span" variant="bodyMd" fontWeight="bold">
-                              {s.firstName} {s.lastName}
-                            </Text>
-                          </IndexTable.Cell>
-                          <IndexTable.Cell>
-                            <Text as="span" variant="bodySm" tone="subdued">
-                              {s.email}
-                            </Text>
-                          </IndexTable.Cell>
-                          <IndexTable.Cell>
-                            <fetcher.Form method="post">
-                              <input type="hidden" name="intent" value="toggle-admin" />
-                              <input type="hidden" name="staffId" value={s.id} />
-                              <input type="hidden" name="currentValue" value={String(isStaffAdmin)} />
-                              <InlineStack gap="200" blockAlign="center">
-                                <Badge tone={isStaffAdmin ? "success" : "new"}>
-                                  {isStaffAdmin ? "Admin" : "Staff"}
-                                </Badge>
-                                <Button variant="plain" submit>
-                                  {isStaffAdmin ? "Revoke" : "Grant"}
-                                </Button>
-                              </InlineStack>
-                            </fetcher.Form>
-                          </IndexTable.Cell>
-                          <IndexTable.Cell>
-                            <fetcher.Form method="post">
-                              <input
-                                type="hidden"
-                                name="intent"
-                                value="toggle-invoice-permission"
-                              />
-                              <input type="hidden" name="staffId" value={s.id} />
-                              <input
-                                type="hidden"
-                                name="currentValue"
-                                value={String(s.canSendInvoice)}
-                              />
-                              <InlineStack gap="200" blockAlign="center">
-                                <Badge
-                                  tone={s.canSendInvoice ? "success" : "new"}
-                                >
-                                  {s.canSendInvoice ? "Can Send" : "Restricted"}
-                                </Badge>
-                                <Button variant="plain" submit>
-                                  {s.canSendInvoice ? "Restrict" : "Allow"}
-                                </Button>
-                              </InlineStack>
-                            </fetcher.Form>
-                          </IndexTable.Cell>
-                        </IndexTable.Row>
-                      );
-                    })}
-                  </IndexTable>
-                </BlockStack>
-              </Card>
-            </Layout.Section>
-          </Layout>
-        )}
-
         <Layout>
           <Layout.Section>
             <Card>
-              <BlockStack gap="300">
-                <Text as="h2" variant="headingMd">
-                  Current Assignments ({assignments.length})
-                </Text>
-                {assignments.length === 0 ? (
-                  <Text as="p" variant="bodyMd" tone="subdued">
-                    No assignments yet. Add one above.
-                  </Text>
-                ) : (
-                  <IndexTable
-                    itemCount={assignments.length}
-                    headings={[
-                      { title: "Staff Member" },
-                      { title: "Company / Location" },
-                      { title: "Actions" },
-                    ]}
-                    selectable={false}
+              <BlockStack gap="400">
+                <InlineStack align="space-between" blockAlign="center" wrap>
+                  <BlockStack gap="100">
+                    <Text as="h2" variant="headingMd">
+                      Sales Reps ({staffMembers.length})
+                    </Text>
+                    <Text as="p" variant="bodySm" tone="subdued">
+                      {totalAssignments} total store {totalAssignments === 1 ? "assignment" : "assignments"}
+                    </Text>
+                  </BlockStack>
+                  {staffMembers.length > 0 && (
+                    <InlineStack gap="200">
+                      <Button
+                        onClick={() =>
+                          setExpandedReps(new Set(filteredStaff.map((s) => s.id)))
+                        }
+                      >
+                        Expand all
+                      </Button>
+                      <Button onClick={() => setExpandedReps(new Set())}>
+                        Collapse all
+                      </Button>
+                    </InlineStack>
+                  )}
+                </InlineStack>
+
+                {staffMembers.length === 0 ? (
+                  <EmptyState
+                    heading="No sales reps yet"
+                    image=""
                   >
-                    {assignments.map((a, index) => {
-                      const staff = staffMap.get(a.staffId);
-                      const loc = locationMap.get(a.companyLocationId);
-                      return (
-                        <IndexTable.Row key={a.id} id={a.id} position={index}>
-                          <IndexTable.Cell>
-                            <Text as="span" variant="bodyMd" fontWeight="bold">
-                              {staff
-                                ? `${staff.firstName} ${staff.lastName}`
-                                : a.staffId}
-                            </Text>
-                            {staff && (
-                              <Text as="span" variant="bodySm" tone="subdued">
-                                {" "}({staff.email})
-                              </Text>
-                            )}
-                          </IndexTable.Cell>
-                          <IndexTable.Cell>
-                            {loc
-                              ? `${loc.company.name} — ${loc.name}`
-                              : a.companyLocationId}
-                          </IndexTable.Cell>
-                          <IndexTable.Cell>
-                            <fetcher.Form method="post">
-                              <input type="hidden" name="intent" value="remove" />
-                              <input type="hidden" name="assignmentId" value={a.id} />
-                              <Button
-                                variant="plain"
-                                tone="critical"
-                                submit
-                              >
-                                Remove
-                              </Button>
-                            </fetcher.Form>
-                          </IndexTable.Cell>
-                        </IndexTable.Row>
-                      );
-                    })}
-                  </IndexTable>
+                    <p>
+                      Sales reps appear here automatically after they log into the app for the
+                      first time.
+                    </p>
+                  </EmptyState>
+                ) : (
+                  <>
+                    <TextField
+                      label="Search reps"
+                      labelHidden
+                      value={search}
+                      onChange={setSearch}
+                      placeholder="Search by name or email..."
+                      autoComplete="off"
+                      prefix={<Icon source={SearchIcon} />}
+                      clearButton
+                      onClearButtonClick={() => setSearch("")}
+                    />
+
+                    {filteredStaff.length === 0 ? (
+                      <Text as="p" variant="bodyMd" tone="subdued">
+                        No reps match &quot;{search}&quot;.
+                      </Text>
+                    ) : (
+                      <BlockStack gap="300">
+                        {filteredStaff.map((staff) => (
+                          <RepCard
+                            key={staff.id}
+                            staff={staff}
+                            isAdmin={adminSet.has(staff.id)}
+                            staffAssignments={assignmentsByStaff.get(staff.id) ?? []}
+                            locationMap={locationMap}
+                            expanded={expandedReps.has(staff.id)}
+                            onToggleExpand={() => toggleExpand(staff.id)}
+                            onRequestRemoveAll={() =>
+                              setPendingAction({
+                                type: "remove-all",
+                                staffId: staff.id,
+                                staffName: `${staff.firstName} ${staff.lastName}`,
+                                count: (assignmentsByStaff.get(staff.id) ?? []).length,
+                              })
+                            }
+                            onRequestDelete={() =>
+                              setPendingAction({
+                                type: "delete-staff",
+                                staffId: staff.id,
+                                staffName: `${staff.firstName} ${staff.lastName}`,
+                                count: (assignmentsByStaff.get(staff.id) ?? []).length,
+                              })
+                            }
+                          />
+                        ))}
+                      </BlockStack>
+                    )}
+                  </>
                 )}
               </BlockStack>
             </Card>
           </Layout.Section>
         </Layout>
       </BlockStack>
+
+      {pendingAction && (
+        <Modal
+          open
+          onClose={closeModal}
+          title={
+            pendingAction.type === "delete-staff"
+              ? `Delete ${pendingAction.staffName}?`
+              : `Remove all assignments for ${pendingAction.staffName}?`
+          }
+          primaryAction={{
+            content:
+              pendingAction.type === "delete-staff"
+                ? "Delete sales rep"
+                : "Remove all assignments",
+            destructive: true,
+            onAction: confirmPendingAction,
+            loading: fetcher.state === "submitting",
+          }}
+          secondaryActions={[{ content: "Cancel", onAction: closeModal }]}
+        >
+          <Modal.Section>
+            <BlockStack gap="300">
+              {pendingAction.type === "delete-staff" ? (
+                <>
+                  <Text as="p" variant="bodyMd">
+                    This will permanently remove <strong>{pendingAction.staffName}</strong> from
+                    the staff list along with their {pendingAction.count}{" "}
+                    {pendingAction.count === 1 ? "assignment" : "assignments"} and admin status.
+                  </Text>
+                  <Banner tone="warning">
+                    <p>
+                      If this person logs into the app again, they will reappear here automatically
+                      with no assignments.
+                    </p>
+                  </Banner>
+                </>
+              ) : (
+                <Text as="p" variant="bodyMd">
+                  This will remove all {pendingAction.count} store{" "}
+                  {pendingAction.count === 1 ? "assignment" : "assignments"} for{" "}
+                  <strong>{pendingAction.staffName}</strong>. Their account and admin status (if
+                  any) will not be affected.
+                </Text>
+              )}
+            </BlockStack>
+          </Modal.Section>
+        </Modal>
+      )}
     </Page>
   );
 }
