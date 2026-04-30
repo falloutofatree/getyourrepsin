@@ -76,7 +76,7 @@ export function ProductCard({
             disabled={isOutOfStock}
             fullWidth
           >
-            {expanded ? "Close" : isOutOfStock ? "Out of Stock" : "Select & Add"}
+            {expanded ? "Close" : isOutOfStock ? "Out of Stock" : "Select"}
           </Button>
         </BlockStack>
       </div>
