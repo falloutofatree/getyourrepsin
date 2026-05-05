@@ -1,4 +1,4 @@
-import type { DraftOrder, Address } from "../../types";
+import type { DraftOrder } from "../../types";
 
 export const CREATE_B2B_DRAFT_ORDER_MUTATION = `#graphql
   mutation CreateB2BDraftOrder($input: DraftOrderInput!) {
@@ -82,25 +82,14 @@ interface CreateDraftOrderInput {
   lineItems: Array<{ variantId: string; quantity: number }>;
   note: string;
   tags: string[];
-  shippingAddress?: Address | null;
-  billingAddress?: Address | null;
-}
-
-function formatAddress(address: Address | null | undefined) {
-  if (!address) return undefined;
-  return {
-    address1: address.address1 ?? undefined,
-    city: address.city ?? undefined,
-    province: address.province ?? undefined,
-    country: address.country ?? undefined,
-    zip: address.zip ?? undefined,
-  };
 }
 
 export async function createDraftOrder(
   admin: { graphql: Function },
   input: CreateDraftOrderInput
 ): Promise<{ draftOrder: DraftOrder; errors: string[] }> {
+  // Shipping/billing addresses intentionally omitted: when purchasingEntity.purchasingCompany
+  // is set, Shopify uses the CompanyLocation's full default addresses automatically.
   const response = await admin.graphql(CREATE_B2B_DRAFT_ORDER_MUTATION, {
     variables: {
       input: {
@@ -115,8 +104,6 @@ export async function createDraftOrder(
         note: input.note,
         tags: input.tags,
         lineItems: input.lineItems,
-        shippingAddress: formatAddress(input.shippingAddress),
-        billingAddress: formatAddress(input.billingAddress),
       },
     },
   });

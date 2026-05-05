@@ -67,8 +67,6 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const note = formData.get("note") as string;
   const lineItemsJson = formData.get("lineItems") as string;
   const sendInvoiceFlag = formData.get("sendInvoice") === "true";
-  const shippingAddressJson = formData.get("shippingAddress") as string;
-  const billingAddressJson = formData.get("billingAddress") as string;
 
   if (!companyLocationId || !companyId || !contactId || !lineItemsJson) {
     return json(
@@ -126,14 +124,8 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     );
   }
 
-  const shippingAddress = shippingAddressJson
-    ? JSON.parse(shippingAddressJson)
-    : null;
-  const billingAddress = billingAddressJson
-    ? JSON.parse(billingAddressJson)
-    : null;
-
-  // Create draft order
+  // Create draft order — shipping/billing addresses come from the CompanyLocation
+  // automatically via purchasingEntity.purchasingCompany; do not send them here.
   const repName = `${staffMember.firstName} ${staffMember.lastName}`.trim();
   const result = await createDraftOrder(admin, {
     companyId,
@@ -148,8 +140,6 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       ? `${note}\n\nOrder placed by ${repName} via Sales Portal`
       : `Order placed by ${repName} via Sales Portal`,
     tags: ["sales-rep-portal", `rep:${staffMember.id.replace("gid://shopify/StaffMember/", "")}`],
-    shippingAddress,
-    billingAddress,
   });
 
   if (result.errors.length > 0) {
@@ -274,15 +264,6 @@ export default function CartReview() {
         return;
       }
 
-      const shippingAddress =
-        (contactFetcher.data?.locationData as typeof locationData)
-          ?.shippingAddress ??
-        locationData?.shippingAddress;
-      const billingAddress =
-        (contactFetcher.data?.locationData as typeof locationData)
-          ?.billingAddress ??
-        locationData?.billingAddress;
-
       const formData = new FormData();
       formData.set("companyLocationId", cart.companyLocationId);
       formData.set("companyId", cart.companyId);
@@ -302,16 +283,10 @@ export default function CartReview() {
       );
       formData.set("companyName", cart.companyName);
       formData.set("locationName", cart.locationName);
-      if (shippingAddress) {
-        formData.set("shippingAddress", JSON.stringify(shippingAddress));
-      }
-      if (billingAddress) {
-        formData.set("billingAddress", JSON.stringify(billingAddress));
-      }
 
       fetcher.submit(formData, { method: "POST" });
     },
-    [selectedContact, cart, fetcher, locationData, contactFetcher.data, shopify]
+    [selectedContact, cart, fetcher, shopify]
   );
 
   // Handle successful order creation
