@@ -7,7 +7,6 @@ application_url = "https://sales-rep-portal-9lckt.ondigitalocean.app"
 embedded = true
 
 [build]
-include_config_on_deploy = true
 
 [webhooks]
 api_version = "2026-04"
