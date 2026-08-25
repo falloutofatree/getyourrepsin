@@ -64,10 +64,19 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     (c) => c.publication
   );
 
-  // Fallback: use the root catalogs query to find any catalog linked to this location
+  // Fallback: resolve the catalog this location's country maps to. Never fall
+  // back to a market catalog — that is what showed non-US companies US pricing.
+  let catalogUnassigned = false;
   if (!activeCatalog) {
-    const locationCountry = location.shippingAddress?.country ?? location.billingAddress?.country;
-    const rootCatalog = await fetchCatalogForLocation(admin, companyLocationId, locationCountry);
+    catalogUnassigned = true;
+    const locationCountry =
+      location.shippingAddress?.countryCode ?? location.billingAddress?.countryCode;
+    const rootCatalog = await fetchCatalogForLocation(
+      admin,
+      shop,
+      companyLocationId,
+      locationCountry,
+    );
     if (rootCatalog) {
       activeCatalog = {
         id: rootCatalog.id,
@@ -76,7 +85,11 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
         publication: rootCatalog.publication,
         priceList: rootCatalog.priceList,
       };
-      console.log("[Catalog] Found via root query:", activeCatalog.id, activeCatalog.title);
+      console.log(
+        "[Catalog] Location unassigned — using mapped catalog:",
+        activeCatalog.id,
+        activeCatalog.title,
+      );
     }
   }
 
@@ -96,6 +109,8 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
       currencyCode: "USD",
       publicationId: null as string | null,
       noCatalog: true,
+      catalogTitle: null as string | null,
+      catalogUnassigned,
       filterableCollections: [] as Array<{ id: string; title: string; numericId: string }>,
       currentSearch: "",
       currentCollection: "",
@@ -141,6 +156,11 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     currencyCode: activeCatalog.priceList?.currency ?? "USD",
     publicationId: activeCatalog.publication.id,
     noCatalog: false,
+    catalogTitle: activeCatalog.title,
+    // True when the location isn't actually a context of this catalog — prices
+    // shown here are the country's mapped prices, but checkout will not match
+    // until someone assigns the location in Shopify.
+    catalogUnassigned,
     filterableCollections: filterableCollections.map((c) => ({
       id: c.collectionId,
       title: c.title,
@@ -269,6 +289,8 @@ export default function CompanyCatalog() {
     priceMap,
     currencyCode,
     noCatalog,
+    catalogTitle,
+    catalogUnassigned,
     filterableCollections,
     currentSearch,
     currentCollection,
@@ -712,6 +734,18 @@ export default function CompanyCatalog() {
         <Layout>
           <Layout.Section>
             <BlockStack gap="400">
+              {catalogUnassigned && (
+                <Banner tone="warning" title="Location not assigned to a catalog">
+                  <p>
+                    This location isn't assigned to a B2B catalog in Shopify.
+                    Prices below are from{" "}
+                    <strong>{catalogTitle ?? "the mapped catalog"}</strong> based
+                    on the shipping country, but checkout won't match until an
+                    admin assigns the location. Ask them to check Catalog
+                    Assignment in Settings.
+                  </p>
+                </Banner>
+              )}
               {(filterableCollections.length > 0 || true) && (
                 <Card>
                   <InlineGrid columns={{ xs: 1, md: 2 }} gap="300">

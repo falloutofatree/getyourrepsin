@@ -164,6 +164,29 @@ export default function Settings() {
 
         <Layout>
           <Layout.AnnotatedSection
+            title="Catalog Assignment"
+            description="Decide which B2B catalog a new company location gets, based on its country."
+          >
+            <Card>
+              <BlockStack gap="300">
+                <Text as="p" variant="bodyMd">
+                  Shopify has no built-in country rule for B2B catalogs. Map
+                  country groups to catalogs here and the app applies them to
+                  every new company location — created in the rep portal or
+                  directly in the Shopify admin.
+                </Text>
+                <InlineStack align="end">
+                  <Button url="/app/catalog-settings">
+                    Manage Catalog Assignment
+                  </Button>
+                </InlineStack>
+              </BlockStack>
+            </Card>
+          </Layout.AnnotatedSection>
+        </Layout>
+
+        <Layout>
+          <Layout.AnnotatedSection
             title="Slack Notifications"
             description="Get notified in Slack when a sales rep creates a draft order that requires review (reps without invoice permission)."
           >

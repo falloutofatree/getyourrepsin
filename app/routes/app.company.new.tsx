@@ -206,9 +206,10 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       }
     }
 
-    // Step 3: Assign catalog based on country
+    // Step 3: Assign the B2B catalog configured for this country.
     const catalogResult = await assignCatalogToNewLocation(
       admin,
+      shop,
       newLocationId,
       countryCode,
     );
@@ -237,6 +238,8 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       companyLocationId: newLocationId,
       companyName: newCompany?.name,
       phoneSkipped,
+      catalogTitle: catalogResult.catalogTitle,
+      catalogAssigned: Boolean(catalogResult.catalogId),
     });
   }
 
@@ -311,11 +314,20 @@ export default function NewCompany() {
   useEffect(() => {
     const data = fetcher.data as Record<string, unknown> | undefined;
     if (data?.intent === "create-company" && data?.success) {
-      shopify.toast.show(
-        data.phoneSkipped
-          ? "Company created, but the phone number was invalid and was not saved. You can add it later."
-          : "Company created successfully!",
-      );
+      if (!data.catalogAssigned) {
+        // Without a catalog the location falls back to default shop pricing,
+        // so the rep needs to know before they quote anything.
+        shopify.toast.show(
+          "Company created, but no catalog was assigned for this country. Pricing may be wrong until an admin sets it.",
+          { isError: true, duration: 8000 },
+        );
+      } else {
+        shopify.toast.show(
+          data.phoneSkipped
+            ? "Company created, but the phone number was invalid and was not saved. You can add it later."
+            : `Company created on catalog "${data.catalogTitle ?? "assigned"}"`,
+        );
+      }
       const locId = data.companyLocationId as string;
       const numericId = locId.replace("gid://shopify/CompanyLocation/", "");
       navigate(`/app/company/${numericId}`);

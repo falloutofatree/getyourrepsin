@@ -1,25 +1,23 @@
 import type { Catalog } from "../../types";
-import { getCached, setCached } from "../cache.server";
+import { getCached, setCached, invalidatePattern } from "../cache.server";
+import {
+  getCatalogMapping,
+  resolveCatalogIdForCountry,
+} from "../catalog-mapping.server";
 
+/**
+ * B2B catalogs are CompanyLocationCatalogs — they are NOT reachable through
+ * markets. `Market.catalogs` only ever returns MarketCatalog objects, so any
+ * lookup that goes through markets will miss every B2B catalog and leave the
+ * location on default (shop currency) pricing.
+ */
 export const B2B_CATALOGS_QUERY = `#graphql
   query B2BCatalogs($first: Int!, $after: String) {
-    catalogs(first: $first, after: $after) {
+    catalogs(first: $first, after: $after, type: COMPANY_LOCATION) {
       nodes {
         id
         title
         status
-        ... on CompanyLocationCatalog {
-          companyLocations(first: 100) {
-            nodes {
-              id
-              name
-              company {
-                id
-                name
-              }
-            }
-          }
-        }
         publication {
           id
         }
@@ -29,156 +27,106 @@ export const B2B_CATALOGS_QUERY = `#graphql
           name
         }
       }
-    }
-  }
-`;
-
-// Query all markets with their regions to map country → market
-const MARKETS_QUERY = `#graphql
-  query Markets {
-    markets(first: 50) {
-      nodes {
-        id
-        name
-        regions(first: 100) {
-          nodes {
-            ... on MarketRegionCountry {
-              code
-              name
-            }
-          }
-        }
-        catalogs(first: 5) {
-          nodes {
-            id
-            title
-            status
-            publication {
-              id
-            }
-            priceList {
-              id
-              currency
-              name
-            }
-          }
-        }
+      pageInfo {
+        hasNextPage
+        endCursor
       }
     }
   }
 `;
-
-interface MarketRegion {
-  code: string;
-  name: string;
-}
-
-interface MarketsResponse {
-  data?: {
-    markets: {
-      nodes: Array<{
-        id: string;
-        name: string;
-        regions: { nodes: MarketRegion[] };
-        catalogs: { nodes: Catalog[] };
-      }>;
-    };
-  };
-  errors?: Array<{ message: string }>;
-}
 
 interface B2BCatalogsResponse {
   data?: {
     catalogs: {
       nodes: Catalog[];
+      pageInfo: { hasNextPage: boolean; endCursor: string | null };
     };
   };
   errors?: Array<{ message: string }>;
 }
 
+const CATALOG_PAGE_SIZE = 50;
+const MAX_CATALOG_PAGES = 20;
+
+/**
+ * Every B2B (company location) catalog in the shop. Paginated — a store with
+ * more than one page of catalogs used to silently lose the tail.
+ */
+export async function fetchB2BCatalogs(
+  admin: { graphql: Function },
+): Promise<Catalog[]> {
+  const cacheKey = "shop:b2b-catalogs";
+  const cached = getCached<Catalog[]>(cacheKey);
+  if (cached) return cached;
+
+  const catalogs: Catalog[] = [];
+  let after: string | null = null;
+
+  for (let page = 0; page < MAX_CATALOG_PAGES; page++) {
+    const response = await admin.graphql(B2B_CATALOGS_QUERY, {
+      variables: { first: CATALOG_PAGE_SIZE, after },
+    });
+    const json: B2BCatalogsResponse = await response.json();
+
+    if (json.errors?.length) {
+      throw new Error(
+        `Failed to fetch B2B catalogs: ${json.errors.map((e) => e.message).join(", ")}`,
+      );
+    }
+
+    const connection = json.data?.catalogs;
+    if (!connection) break;
+
+    catalogs.push(...connection.nodes);
+
+    if (!connection.pageInfo.hasNextPage) break;
+    after = connection.pageInfo.endCursor;
+    if (!after) break;
+  }
+
+  setCached(cacheKey, catalogs, "CATALOG_PUBLICATION");
+  return catalogs;
+}
+
+/**
+ * Fallback catalog lookup for a company location that `companyLocation.catalogs`
+ * returned nothing usable for — i.e. the location was never assigned to a B2B
+ * catalog. Resolves the catalog its country SHOULD map to, so the rep sees the
+ * right region's pricing instead of default shop (USD) pricing.
+ *
+ * Callers must check `companyLocation.catalogs` first — that is the
+ * authoritative assignment. This only covers the unassigned case.
+ */
 export async function fetchCatalogForLocation(
   admin: { graphql: Function },
+  shop: string,
   locationId: string,
-  locationCountry?: string | null
+  locationCountryCode?: string | null,
 ): Promise<Catalog | null> {
+  if (!locationCountryCode) return null;
+
   const cacheKey = `location:${locationId}:catalog`;
-  // Temporarily skip cache for debugging
-  // const cached = getCached<Catalog | null>(cacheKey);
-  // if (cached !== undefined) return cached;
+  const cached = getCached<Catalog | null>(cacheKey);
+  if (cached !== undefined) return cached;
 
-  const response = await admin.graphql(B2B_CATALOGS_QUERY, {
-    variables: { first: 50 },
-  });
-  const json: B2BCatalogsResponse = await response.json();
+  const mapping = await getCatalogMapping(shop);
+  const mappedId = resolveCatalogIdForCountry(mapping, locationCountryCode);
 
-  console.log("[Catalogs] Root catalogs query result:", JSON.stringify(json, null, 2));
+  let catalog: Catalog | null = null;
+  if (mappedId) {
+    const catalogs = await fetchB2BCatalogs(admin);
+    catalog = catalogs.find((c) => c.id === mappedId) ?? null;
+  }
 
-  if (json.errors?.length) {
-    console.error("[Catalogs] Root query errors:", JSON.stringify(json.errors));
-    throw new Error(
-      `Failed to fetch catalogs: ${json.errors.map((e) => e.message).join(", ")}`
+  if (catalog) {
+    console.warn(
+      `[Catalogs] Location ${locationId} (${locationCountryCode}) is not assigned to any B2B catalog. ` +
+        `Showing mapped catalog "${catalog.title}" — assign it in Shopify to fix checkout pricing.`,
     );
-  }
-
-  if (!json.data?.catalogs?.nodes) {
-    console.log("[Catalogs] No catalogs data in response");
-    return null;
-  }
-
-  console.log("[Catalogs] Found", json.data.catalogs.nodes.length, "catalogs, looking for locationId:", locationId);
-
-  // First try: CompanyLocationCatalog with matching location
-  let catalog = json.data.catalogs.nodes.find((c) =>
-    c.companyLocations?.nodes?.some((loc) => loc.id === locationId)
-  ) ?? null;
-
-  // Second try: query markets to find the right MarketCatalog by country
-  if (!catalog && locationCountry) {
-    console.log("[Catalogs] Looking up markets for country:", locationCountry);
-    try {
-      const marketsResponse = await admin.graphql(MARKETS_QUERY);
-      const marketsJson: MarketsResponse = await marketsResponse.json();
-
-      if (marketsJson.data?.markets?.nodes) {
-        const countryUpper = locationCountry.toUpperCase();
-
-        // Find the market whose regions include this country
-        const matchingMarket = marketsJson.data.markets.nodes.find((m) =>
-          m.regions.nodes.some((r) =>
-            r.name?.toUpperCase() === countryUpper ||
-            r.code?.toUpperCase() === countryUpper
-          )
-        );
-
-        if (matchingMarket) {
-          console.log("[Catalogs] Matched market:", matchingMarket.name, "for country:", locationCountry);
-
-          // Use the catalog from the market directly
-          const marketCatalog = matchingMarket.catalogs.nodes.find(
-            (c) => c.status === "ACTIVE" && c.publication
-          );
-          if (marketCatalog) {
-            catalog = marketCatalog;
-            console.log("[Catalogs] Found catalog via market:", catalog.title);
-          }
-        } else {
-          console.log("[Catalogs] No market found for country:", locationCountry);
-        }
-      }
-    } catch (err) {
-      console.error("[Catalogs] Markets query failed:", err);
-    }
-  }
-
-  // Last resort: use first market catalog from the catalogs query
-  if (!catalog) {
-    const marketCatalogs = json.data.catalogs.nodes.filter(
-      (c) => c.id.includes("MarketCatalog") && c.status === "ACTIVE" && c.publication
+  } else {
+    console.warn(
+      `[Catalogs] Location ${locationId} (${locationCountryCode}) has no catalog and no mapping for its country.`,
     );
-    if (marketCatalogs.length > 0) {
-      catalog = marketCatalogs[0];
-      console.log("[Catalogs] Fallback to first market catalog:", catalog?.title);
-    }
   }
 
   setCached(cacheKey, catalog, "CATALOG_PUBLICATION");
@@ -188,8 +136,11 @@ export async function fetchCatalogForLocation(
 // --- Catalog assignment for new company locations ---
 
 const CATALOG_CONTEXT_UPDATE_MUTATION = `#graphql
-  mutation CatalogContextUpdate($catalogId: ID!, $contextsToAdd: [CatalogContextInput!]!) {
-    catalogContextUpdate(catalogId: $catalogId, contextsToAdd: $contextsToAdd) {
+  mutation AssignLocationToCatalog($catalogId: ID!, $companyLocationIds: [ID!]!) {
+    catalogContextUpdate(
+      catalogId: $catalogId
+      contextsToAdd: { companyLocationIds: $companyLocationIds }
+    ) {
       catalog {
         id
         title
@@ -212,91 +163,89 @@ interface CatalogContextUpdateResponse {
   errors?: Array<{ message: string }>;
 }
 
+export interface CatalogAssignmentResult {
+  catalogId: string | null;
+  catalogTitle: string | null;
+  errors: string[];
+}
+
 /**
- * Find the right catalog for a country code and assign the new company location to it.
- * For MarketCatalogs, the market membership handles it automatically.
- * For CompanyLocationCatalogs, we need to explicitly add the location.
+ * Assign a company location to the B2B catalog configured for its country.
+ *
+ * Used by both entry points: the rep portal's company-create flow and the
+ * `company_locations/create` webhook (which covers locations created directly
+ * in the Shopify admin).
+ *
+ * Requires the `write_products` access scope — catalogContextUpdate is gated
+ * on it even though it only touches catalog contexts.
  */
 export async function assignCatalogToNewLocation(
   admin: { graphql: Function },
+  shop: string,
   companyLocationId: string,
-  countryCode: string,
-): Promise<{ catalogId: string | null; errors: string[] }> {
-  // Find the matching market catalog by country code
+  countryCode: string | null | undefined,
+): Promise<CatalogAssignmentResult> {
+  const empty: CatalogAssignmentResult = {
+    catalogId: null,
+    catalogTitle: null,
+    errors: [],
+  };
+
+  if (!countryCode) {
+    console.warn(
+      `[Catalogs] No country for location ${companyLocationId} — skipping catalog assignment`,
+    );
+    return empty;
+  }
+
   try {
-    const marketsResponse = await admin.graphql(MARKETS_QUERY);
-    const marketsJson: MarketsResponse = await marketsResponse.json();
+    const mapping = await getCatalogMapping(shop);
+    const catalogId = resolveCatalogIdForCountry(mapping, countryCode);
 
-    if (!marketsJson.data?.markets?.nodes) {
-      return { catalogId: null, errors: ["No markets found"] };
-    }
-
-    const matchingMarket = marketsJson.data.markets.nodes.find((m) =>
-      m.regions.nodes.some(
-        (r) => r.code?.toUpperCase() === countryCode.toUpperCase(),
-      ),
-    );
-
-    if (!matchingMarket) {
-      console.log("[Catalogs] No market found for country code:", countryCode);
-      return { catalogId: null, errors: [] };
-    }
-
-    const marketCatalog = matchingMarket.catalogs.nodes.find(
-      (c) => c.status === "ACTIVE" && c.publication,
-    );
-
-    if (!marketCatalog) {
-      console.log("[Catalogs] No active catalog for market:", matchingMarket.name);
-      return { catalogId: null, errors: [] };
-    }
-
-    // Market catalogs automatically cover locations in their regions,
-    // so no explicit assignment needed. But for CompanyLocationCatalogs,
-    // we need to add the location to the catalog context.
-    if (marketCatalog.id.includes("CompanyLocationCatalog")) {
-      const updateResponse = await admin.graphql(
-        CATALOG_CONTEXT_UPDATE_MUTATION,
-        {
-          variables: {
-            catalogId: marketCatalog.id,
-            contextsToAdd: [
-              { companyLocationIds: [companyLocationId] },
-            ],
-          },
-        },
+    if (!catalogId) {
+      console.warn(
+        `[Catalogs] No catalog mapped for country ${countryCode}. ` +
+          `Configure the country → catalog mapping in the app's Settings page.`,
       );
-      const updateJson: CatalogContextUpdateResponse =
-        await updateResponse.json();
-
-      if (updateJson.errors?.length) {
-        return {
-          catalogId: null,
-          errors: updateJson.errors.map((e) => e.message),
-        };
-      }
-
-      if (updateJson.data?.catalogContextUpdate?.userErrors?.length) {
-        return {
-          catalogId: null,
-          errors: updateJson.data.catalogContextUpdate.userErrors.map(
-            (e) => e.message,
-          ),
-        };
-      }
+      return empty;
     }
 
+    const response = await admin.graphql(CATALOG_CONTEXT_UPDATE_MUTATION, {
+      variables: { catalogId, companyLocationIds: [companyLocationId] },
+    });
+    const json: CatalogContextUpdateResponse = await response.json();
+
+    if (json.errors?.length) {
+      const errors = json.errors.map((e) => e.message);
+      console.error("[Catalogs] catalogContextUpdate failed:", errors.join(", "));
+      return { ...empty, errors };
+    }
+
+    const userErrors = json.data?.catalogContextUpdate?.userErrors ?? [];
+    if (userErrors.length > 0) {
+      const errors = userErrors.map((e) => e.message);
+      console.error("[Catalogs] catalogContextUpdate userErrors:", errors.join(", "));
+      return { ...empty, errors };
+    }
+
+    // The location→catalog and catalog→locations caches are both stale now.
+    invalidatePattern(`location:${companyLocationId}:catalog`);
+    invalidatePattern("shop:b2b-catalogs");
+
+    const catalog = json.data?.catalogContextUpdate?.catalog ?? null;
     console.log(
-      "[Catalogs] Assigned catalog",
-      marketCatalog.title,
-      "for new location in",
-      countryCode,
+      `[Catalogs] Assigned location ${companyLocationId} (${countryCode}) to catalog "${catalog?.title ?? catalogId}"`,
     );
-    return { catalogId: marketCatalog.id, errors: [] };
+
+    return {
+      catalogId,
+      catalogTitle: catalog?.title ?? null,
+      errors: [],
+    };
   } catch (err) {
     console.error("[Catalogs] Assign catalog failed:", err);
     return {
-      catalogId: null,
+      ...empty,
       errors: [err instanceof Error ? err.message : "Unknown error"],
     };
   }
