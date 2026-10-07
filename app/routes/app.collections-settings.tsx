@@ -35,13 +35,49 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     fetchAllCollections(admin),
     prisma.filterableCollection.findMany({
       where: { shop },
-      select: { collectionId: true },
+      select: { collectionId: true, title: true, numericId: true },
     }),
   ]);
 
-  const enabledIds = new Set(enabledCollections.map((c) => c.collectionId));
+  // Sync saved filters with live Shopify collections: drop deleted ones and
+  // refresh renamed titles, so reps only see collections that still exist.
+  const liveById = new Map(collections.map((c) => [c.id, c]));
+  const removed = enabledCollections.filter((c) => !liveById.has(c.collectionId));
+  const renamed = enabledCollections.filter((c) => {
+    const live = liveById.get(c.collectionId);
+    return live && (live.title !== c.title || live.numericId !== c.numericId);
+  });
 
-  return json({ collections, enabledIds: Array.from(enabledIds), shop });
+  if (removed.length > 0 || renamed.length > 0) {
+    await prisma.$transaction([
+      prisma.filterableCollection.deleteMany({
+        where: { shop, collectionId: { in: removed.map((c) => c.collectionId) } },
+      }),
+      ...renamed.map((c) => {
+        const live = liveById.get(c.collectionId)!;
+        return prisma.filterableCollection.update({
+          where: { shop_collectionId: { shop, collectionId: c.collectionId } },
+          data: { title: live.title, numericId: live.numericId },
+        });
+      }),
+    ]);
+    console.log("[Collections] Synced filters", {
+      shop,
+      removed: removed.map((c) => c.title),
+      renamed: renamed.map((c) => c.title),
+    });
+  }
+
+  const enabledIds = enabledCollections
+    .filter((c) => liveById.has(c.collectionId))
+    .map((c) => c.collectionId);
+
+  return json({
+    collections,
+    enabledIds,
+    removedTitles: removed.map((c) => c.title),
+    shop,
+  });
 };
 
 export const action = async ({ request }: ActionFunctionArgs) => {
@@ -80,7 +116,8 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 };
 
 export default function CollectionSettings() {
-  const { collections, enabledIds } = useLoaderData<typeof loader>();
+  const { collections, enabledIds, removedTitles } =
+    useLoaderData<typeof loader>();
   const submit = useSubmit();
   const shopify = useAppBridge();
 
@@ -100,8 +137,18 @@ export default function CollectionSettings() {
                 <Text as="p" variant="bodySm" tone="subdued">
                   Select which collections sales reps can use to filter products
                   in the catalog. Only enabled collections will appear in the
-                  filter dropdown.
+                  filter dropdown. This list syncs with Shopify each time this
+                  page is opened.
                 </Text>
+
+                {removedTitles.length > 0 && (
+                  <Banner tone="info">
+                    <p>
+                      Removed collections that no longer exist in Shopify:{" "}
+                      {removedTitles.join(", ")}
+                    </p>
+                  </Banner>
+                )}
 
                 {collections.length === 0 ? (
                   <Banner tone="info">

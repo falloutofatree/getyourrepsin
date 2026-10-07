@@ -60,7 +60,12 @@ export async function fetchAllCollections(
       );
     }
 
-    if (!json.data?.collections?.nodes) break;
+    // Throw rather than return a partial list — callers prune saved filters
+    // against this result, so a truncated list would delete live collections.
+    if (!json.data?.collections?.nodes) {
+      console.error("[Collections] Missing collections data in response");
+      throw new Error("Failed to fetch collections: empty response");
+    }
 
     for (const c of json.data.collections.nodes) {
       const numericId = c.id.replace("gid://shopify/Collection/", "");
