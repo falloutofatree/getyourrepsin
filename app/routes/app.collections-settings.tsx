@@ -4,6 +4,7 @@ import {
   type ActionFunctionArgs,
 } from "@remix-run/node";
 import { useLoaderData, useFetcher, useSubmit } from "@remix-run/react";
+import { useEffect } from "react";
 import {
   Page,
   Layout,
@@ -22,6 +23,44 @@ import { fetchAllCollections } from "../lib/graphql/collections";
 import type { CollectionInfo } from "../lib/graphql/collections";
 import prisma from "../db.server";
 
+type SyncResult =
+  | { success: true; intent: "sync"; removedTitles: string[]; renamedTitles: string[] }
+  | { success: false; intent: "sync"; error: string };
+
+interface SavedFilter {
+  collectionId: string;
+  title: string;
+  numericId: string;
+}
+
+// Compare saved filters against live Shopify collections: filters whose
+// collection was deleted, and filters whose title or numeric ID changed.
+function diffFilters(saved: SavedFilter[], collections: CollectionInfo[]) {
+  const liveById = new Map(collections.map((c) => [c.id, c]));
+  const removed = saved.filter((c) => !liveById.has(c.collectionId));
+  const renamed = saved.flatMap((c) => {
+    const live = liveById.get(c.collectionId);
+    return live && (live.title !== c.title || live.numericId !== c.numericId)
+      ? [{ saved: c, live }]
+      : [];
+  });
+  return { liveById, removed, renamed };
+}
+
+async function loadFilters(
+  admin: { graphql: Function },
+  shop: string,
+) {
+  const [collections, saved] = await Promise.all([
+    fetchAllCollections(admin),
+    prisma.filterableCollection.findMany({
+      where: { shop },
+      select: { collectionId: true, title: true, numericId: true },
+    }),
+  ]);
+  return { collections, saved };
+}
+
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { admin, staffMember, shop } = await requireAuth(request);
 
@@ -31,57 +70,27 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     });
   }
 
-  const [collections, enabledCollections] = await Promise.all([
-    fetchAllCollections(admin),
-    prisma.filterableCollection.findMany({
-      where: { shop },
-      select: { collectionId: true, title: true, numericId: true },
-    }),
-  ]);
+  // Read-only: report stale filters, but only the Sync button changes them.
+  const { collections, saved } = await loadFilters(admin, shop);
+  const { liveById, removed, renamed } = diffFilters(saved, collections);
 
-  // Sync saved filters with live Shopify collections: drop deleted ones and
-  // refresh renamed titles, so reps only see collections that still exist.
-  const liveById = new Map(collections.map((c) => [c.id, c]));
-  const removed = enabledCollections.filter((c) => !liveById.has(c.collectionId));
-  const renamed = enabledCollections.filter((c) => {
-    const live = liveById.get(c.collectionId);
-    return live && (live.title !== c.title || live.numericId !== c.numericId);
-  });
-
-  if (removed.length > 0 || renamed.length > 0) {
-    await prisma.$transaction([
-      prisma.filterableCollection.deleteMany({
-        where: { shop, collectionId: { in: removed.map((c) => c.collectionId) } },
-      }),
-      ...renamed.map((c) => {
-        const live = liveById.get(c.collectionId)!;
-        return prisma.filterableCollection.update({
-          where: { shop_collectionId: { shop, collectionId: c.collectionId } },
-          data: { title: live.title, numericId: live.numericId },
-        });
-      }),
-    ]);
-    console.log("[Collections] Synced filters", {
-      shop,
-      removed: removed.map((c) => c.title),
-      renamed: renamed.map((c) => c.title),
-    });
-  }
-
-  const enabledIds = enabledCollections
+  const enabledIds = saved
     .filter((c) => liveById.has(c.collectionId))
     .map((c) => c.collectionId);
 
   return json({
     collections,
     enabledIds,
-    removedTitles: removed.map((c) => c.title),
+    staleTitles: [
+      ...removed.map((c) => c.title),
+      ...renamed.map((r) => r.saved.title),
+    ],
     shop,
   });
 };
 
 export const action = async ({ request }: ActionFunctionArgs) => {
-  const { staffMember, shop } = await requireAuth(request);
+  const { admin, staffMember, shop } = await requireAuth(request);
 
   if (!staffMember.isAdmin) {
     throw new Response("Only admins can manage collection filters", {
@@ -92,6 +101,47 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const formData = await request.formData();
   const intent = formData.get("intent") as string;
   console.log("[Collections] Action hit, intent:", intent, "formData keys:", [...formData.keys()]);
+
+  if (intent === "sync") {
+    try {
+      const { collections, saved } = await loadFilters(admin, shop);
+      const { removed, renamed } = diffFilters(saved, collections);
+
+      if (removed.length > 0 || renamed.length > 0) {
+        await prisma.$transaction([
+          prisma.filterableCollection.deleteMany({
+            where: { shop, collectionId: { in: removed.map((c) => c.collectionId) } },
+          }),
+          ...renamed.map(({ saved: c, live }) =>
+            prisma.filterableCollection.update({
+              where: { shop_collectionId: { shop, collectionId: c.collectionId } },
+              data: { title: live.title, numericId: live.numericId },
+            }),
+          ),
+        ]);
+      }
+
+      console.log("[Collections] Synced filters", {
+        shop,
+        removed: removed.map((c) => c.title),
+        renamed: renamed.map((r) => `${r.saved.title} -> ${r.live.title}`),
+      });
+
+      return json<SyncResult>({
+        success: true,
+        intent: "sync",
+        removedTitles: removed.map((c) => c.title),
+        renamedTitles: renamed.map((r) => `${r.saved.title} → ${r.live.title}`),
+      });
+    } catch (error) {
+      console.error("[Collections] Sync failed:", error);
+      return json<SyncResult>({
+        success: false,
+        intent: "sync",
+        error: "Could not sync with Shopify. Please try again.",
+      });
+    }
+  }
 
   if (intent === "toggle") {
     const collectionId = formData.get("collectionId") as string;
@@ -116,15 +166,40 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 };
 
 export default function CollectionSettings() {
-  const { collections, enabledIds, removedTitles } =
+  const { collections, enabledIds, staleTitles } =
     useLoaderData<typeof loader>();
   const submit = useSubmit();
   const shopify = useAppBridge();
+  const syncFetcher = useFetcher<SyncResult>();
 
   const enabledSet = new Set(enabledIds);
+  const isSyncing = syncFetcher.state !== "idle";
+  const syncResult =
+    syncFetcher.state === "idle" ? syncFetcher.data ?? null : null;
+
+  useEffect(() => {
+    if (!syncResult) return;
+    if (!syncResult.success) {
+      shopify.toast.show("Sync failed", { isError: true });
+    } else if (
+      syncResult.removedTitles.length === 0 &&
+      syncResult.renamedTitles.length === 0
+    ) {
+      shopify.toast.show("Collections are already up to date");
+    } else {
+      shopify.toast.show("Collections synced with Shopify");
+    }
+  }, [syncResult, shopify]);
 
   return (
-    <Page backAction={{ content: "Settings", url: "/app/settings" }}>
+    <Page
+      backAction={{ content: "Settings", url: "/app/settings" }}
+      primaryAction={{
+        content: "Sync with Shopify",
+        loading: isSyncing,
+        onAction: () => syncFetcher.submit({ intent: "sync" }, { method: "POST" }),
+      }}
+    >
       <TitleBar title="Collection Filters" />
       <BlockStack gap="500">
         <Layout>
@@ -137,15 +212,50 @@ export default function CollectionSettings() {
                 <Text as="p" variant="bodySm" tone="subdued">
                   Select which collections sales reps can use to filter products
                   in the catalog. Only enabled collections will appear in the
-                  filter dropdown. This list syncs with Shopify each time this
-                  page is opened.
+                  filter dropdown. After deleting or renaming collections in
+                  Shopify, click Sync with Shopify to update this list.
                 </Text>
 
-                {removedTitles.length > 0 && (
-                  <Banner tone="info">
+                {syncResult && !syncResult.success && (
+                  <Banner tone="critical">
+                    <p>{syncResult.error}</p>
+                  </Banner>
+                )}
+
+                {syncResult?.success &&
+                  (syncResult.removedTitles.length > 0 ||
+                    syncResult.renamedTitles.length > 0) && (
+                    <Banner tone="success">
+                      <BlockStack gap="100">
+                        {syncResult.removedTitles.length > 0 && (
+                          <p>
+                            Removed collections that no longer exist in Shopify:{" "}
+                            {syncResult.removedTitles.join(", ")}
+                          </p>
+                        )}
+                        {syncResult.renamedTitles.length > 0 && (
+                          <p>Updated names: {syncResult.renamedTitles.join(", ")}</p>
+                        )}
+                      </BlockStack>
+                    </Banner>
+                  )}
+
+                {staleTitles.length > 0 && (
+                  <Banner
+                    tone="warning"
+                    action={{
+                      content: "Sync with Shopify",
+                      loading: isSyncing,
+                      onAction: () =>
+                        syncFetcher.submit({ intent: "sync" }, { method: "POST" }),
+                    }}
+                  >
                     <p>
-                      Removed collections that no longer exist in Shopify:{" "}
-                      {removedTitles.join(", ")}
+                      {staleTitles.length === 1
+                        ? "1 collection filter is out of date"
+                        : `${staleTitles.length} collection filters are out of date`}{" "}
+                      (deleted or renamed in Shopify): {staleTitles.join(", ")}.
+                      Sales reps still see the old version until you sync.
                     </p>
                   </Banner>
                 )}
